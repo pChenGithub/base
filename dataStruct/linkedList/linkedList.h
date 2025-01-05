@@ -55,7 +55,7 @@ int foreach_lklist(LINK_HEAD* head, hand_node hand);
 // head:链表头指针,
 // _mnode:节点指针
 #define FOREACH_LKLIST(head, _mnode) \
-    for (_mnode=head->node.next;_mnode!=(&head->node);_mnode=_mnode->next)
+    for (_mnode=(head)->node.next;_mnode!=(&(head)->node);_mnode=_mnode->next)
 
 /************************ node和业务结构体转换 ******************************** */
 // 结构体操作
