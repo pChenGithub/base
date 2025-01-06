@@ -15,6 +15,7 @@ int init_linkedlist(LINK_HEAD** head) {
     phead->node.next = & phead->node;
     phead->node.pre = & phead->node;
     phead->nodecount = 0;
+    phead->node.head = phead;
     // 初始化互斥锁
     if (0!=pthread_mutex_init(&phead->lock_linked, NULL)) {
         free(phead);
@@ -65,6 +66,8 @@ int insert_lknode(LINK_HEAD* head, LINK_NODE* node, int index) {
     pnode->next->pre = node;
     pnode->next = node;
     node->pre = pnode;
+    //
+    node->head = head;
     // 计数增加
     head->nodecount++;
     // 解锁
@@ -84,7 +87,7 @@ int insert_tail(LINK_HEAD* head, LINK_NODE* node) {
     return insert_lknode(head, node, -1);
 }
 
-int remove_lknode(LINK_HEAD* head, int index, LINK_NODE** node) {
+int remove_lknode_index(LINK_HEAD* head, int index, LINK_NODE** node) {
     LINK_NODE* pnode = (LINK_NODE*)head;
     if (NULL==head || NULL==node)
         return -LKLIST_ERR_CHECKPARAM;
@@ -110,9 +113,32 @@ int remove_lknode(LINK_HEAD* head, int index, LINK_NODE** node) {
     //
     pnode->pre->next = pnode->next;
     pnode->next->pre = pnode->pre;
-    if (NULL!=node) {
-        *node = pnode;
+    // node必然不为NULL
+    *node = pnode;
+    // 计数减少
+    head->nodecount--;
+    // 解锁
+    pthread_mutex_unlock(&head->lock_linked);
+    return 0;
+}
+
+int remove_lknode(LINK_HEAD* head, LINK_NODE* node) {
+    if (NULL==head || NULL==node)
+        return -LKLIST_ERR_CHECKPARAM;
+    // 加锁
+    if (0!=pthread_mutex_trylock(&head->lock_linked)) {
+        usleep(LKLIST_LOCK_TIMEOUT_US);
+        if (0!=pthread_mutex_trylock(&head->lock_linked))
+            return -LKLIST_ERR_LOCK;
     }
+    // 检查节点是否属于链表头
+    if (node->head!=head) {
+        pthread_mutex_unlock(&head->lock_linked);
+        return -LKLIST_ERR_INVALID_NODE;
+    }
+    //
+    node->pre->next = node->next;
+    node->next->pre = node->pre;
     // 计数减少
     head->nodecount--;
     // 解锁
