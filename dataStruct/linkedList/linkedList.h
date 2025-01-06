@@ -11,11 +11,13 @@ extern "C" {
 #define LKLIST_ERR_HAS_NODE   5   // 未清空链表
 #define LKLIST_ERR_INVALID_INDEX   6   // 无效的下标
 #define LKLIST_ERR_FOREACH_BREAK   7   // 遍历中断
+#define LKLIST_ERR_INVALID_NODE   8   // 无效的节点，不属于该链表头
 // 模块内拿锁超时事件设置
 #define LKLIST_LOCK_TIMEOUT_US 10000  // 拿锁超时事件,微妙
 typedef struct _node{
     struct _node* pre;      // 上一个节点
     struct _node* next;     // 下一个节点
+    void* head; // 指向链表头
 } LINK_NODE;
 
 typedef struct {
@@ -73,15 +75,16 @@ int foreach_lklist(LINK_HEAD* head, hand_node hand);
 /************************ 链表删除节点 ******************************** */
 // 指定位置删除一项
 // 1表示在第一个node,-1表示倒数第一个node
-// node会返回删除的node的指针，如果给NULL，不返回
-int remove_lknode(LINK_HEAD* head, int index, LINK_NODE** node);
+// node会返回删除的node的指针，删除节点，必须拿到节点然后用户回收
+int remove_lknode_index(LINK_HEAD* head, int index, LINK_NODE** node);
 // 指定node删除
+int remove_lknode(LINK_HEAD* head, LINK_NODE* node);
 // 清空链表,用户必须在 hand 回调中处理用户数据,否则后果自负
 int clear_lklist(LINK_HEAD* head, hand_node hand);
 #define CLEAR_LKLIST(head, type, member) ({ \
     LINK_NODE* _mnode = NULL; \
     for (_mnode=(head)->node.next;_mnode!=(&((head)->node));) { \
-        (type)* _mdata = CONTAINER_OF(_mnode, type, member); \
+        type* _mdata = CONTAINER_OF(_mnode, type, member); \
         _mnode = _mnode->next; \
         free(_mdata); \
     } \
