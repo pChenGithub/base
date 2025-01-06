@@ -73,7 +73,7 @@ int foreach_lklist(LINK_HEAD* head, hand_node hand);
 /************************ 链表删除节点 ******************************** */
 // 指定位置删除一项
 // 1表示在第一个node,-1表示倒数第一个node
-// node会返回删除的node的指针
+// node会返回删除的node的指针，如果给NULL，不返回
 int remove_lknode(LINK_HEAD* head, int index, LINK_NODE** node);
 // 指定node删除
 // 清空链表,用户必须在 hand 回调中处理用户数据,否则后果自负

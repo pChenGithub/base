@@ -110,7 +110,9 @@ int remove_lknode(LINK_HEAD* head, int index, LINK_NODE** node) {
     //
     pnode->pre->next = pnode->next;
     pnode->next->pre = pnode->pre;
-    *node = pnode;
+    if (NULL!=node) {
+        *node = pnode;
+    }
     // 计数减少
     head->nodecount--;
     // 解锁
