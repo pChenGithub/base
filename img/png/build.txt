@@ -1,0 +1,5 @@
+./configure --prefix=/media/cp/1f4ae5c9-7b98-4e3d-b846-2a0bd3c8cfa2/home/zhh/work/YT815/appFront/base/img/png --host=arm-linux CC=aarch64-linux-gnu-gcc CPPFLAGS=-I../../../zlib/include LDFLAGS=-L../../../zlib/lib
+
+
+./configure --prefix=/media/cp/1f4ae5c9-7b98-4e3d-b846-2a0bd3c8cfa2/home/zhh/work/YT815/appFront/base/img/png --host=aarch64-linux CC=aarch64-linux-gnu-gcc CPPFLAGS=-I../../../zlib/include LDFLAGS=-L../../../zlib/lib
+

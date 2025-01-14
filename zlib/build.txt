@@ -1,0 +1,2 @@
+./configure --prefix=../
+修改Makefile，修改工具链
