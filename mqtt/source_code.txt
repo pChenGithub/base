@@ -3,4 +3,13 @@ https://mosquitto.org
 https://mqtt.org/
 
 
+paho.mqtt.c  github
+https://github.com/eclipse-paho/paho.mqtt.c/releases
+生成 
+libpaho-mqtt3c.so
+libpaho-mqtt3a.so
+c后缀是同步
+a后缀是异步？？？
+
+
 
