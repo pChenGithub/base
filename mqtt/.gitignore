@@ -1,0 +1,7 @@
+build_mosquitto_x86
+mosquitto-2.0.15
+paho.mqtt.c-1.3.9/
+build_paho.mqtt.c_aarch64
+libpaho-mqtt3c.so
+libpaho-mqtt3c.so.1
+libpaho-mqtt3c.so.1.3.9
