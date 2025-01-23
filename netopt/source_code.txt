@@ -1,0 +1,28 @@
+wpa
+https://w1.fi/wpa_supplicant/
+
+
+集成wpa_ctrl
+2个问题，
+1、需要哪些文件
+
+in wpa_supplicant/src/common : 
+wpa_ctrl.h 
+wpa_ctrl.c
+in wpa_supplicant/src/utils : 
+build_config.h 
+common.h 
+includes.h 
+os.h 
+os_unix.c 
+wpabuf.h 
+wpa_debug.h
+your own file
+
+需要定义2个宏，开启linux的 wpa_ctrl.c 实现
+CONFIG_CTRL_IFACE
+CONFIG_CTRL_IFACE_UNIX
+参考链接 https://dev59.com/cJjga4cB1Zd3GeqPNaqi
+
+2、遇到size_t为未知类型
+修改 wpa_ctrl.h ，添加 #include<stdlib.h>

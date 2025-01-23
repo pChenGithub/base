@@ -9,9 +9,12 @@ extern "C" {
 /** ************************************/
 // 错误码
 #define ERR_FILEOPT_CHECKPARAM  1   // 检查参数失败
+#define ERR_FILEOPT_NOT_EXIST   2   // 文件不存在
+#define ERR_FILEOPT_STAT        3   // 对文件执行stat失败
+#define ERR_FILEOPT_FILE_OPEN   4   // 打开文件失败
 
 /** ************************************/
-// 文件读
+// 文件读，返回值，错误码，或者读取大小
 int file_read(const char* file, char* buf, unsigned int buflen);
 // 文件写，重新写/追加
 int file_write(const char* file, char* buf, unsigned int size);
@@ -22,9 +25,9 @@ int file_remove(const char* file);
 int file_copy(const char* file_src, const char* file_dist);
 // 文件移动
 int file_move(const char* file_src, const char* file_dist);
-// 获取文件长度
-int file_size(const char* file);
-// 文件是否存在
+// 获取文件长度，返回错误码，或者文件大小
+long file_size(const char* file);
+// 文件是否存在,返回错误码，或者0(表示文件存在)
 int file_exist(const char* file);
 
 /** ************************************/

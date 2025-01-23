@@ -41,4 +41,14 @@
 #define NETERR_DHCP_HASTHREAD           36  // 已经创建指定接口dhcp线程
 #define NETERR_SELECT                   37  // 执行select错误
 #define NETERR_SELECT_TIMEOUT           38  // 执行select超时
+#define NETERR_PRO_NOT_EXIST            39  // 进程不存在
+#define NETERR_PRO_EXIST                40  // 进程存在
+
+// wifi 错误码，从100开始
+#define NETERR_WPA_IS_RUN               100 // wpa_supplicant进程运行中
+#define NETERR_WPA_NOT_RUN              101 // wpa_supplicant进程未运行
+#define NETERR_WPA_CONF_NONE            102 // wpa_supplicant没有配置文件
+#define NETERR_WPA_CONNECT_FAIL         103 // 创建连接wpa_supplicant失败
+#define NETERR_WPA_ATTACH_FAIL          104 // 创建监听wpa_supplicant失败
+
 #endif
