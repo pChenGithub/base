@@ -2,11 +2,14 @@
 #include "net_errno.h"
 #include "file_opt.h"
 #include "wpas/wpa_ctrl.h"
+#include "net_opt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #define WPA_SUPPLICANT_CONF ""
 #define WPA_CONNECT_FILE    "/var/run/wpa_supplicant"
+#define WIFI_AP_CONF        "/home/rockchip/zytk_gate/data/ap.conf"
+#define UDHCPD_CONF         "/home/rockchip/zytk_gate/data/dhcpd.conf"
 //
 typedef struct {
     struct wpa_ctrl* ctrl_conn;     // 命令接口
@@ -14,6 +17,7 @@ typedef struct {
     char reply[4096];               // 回复消息
 } WIFI_NODE; // 单个wifi节点
 static WIFI_NODE node_wlan0;
+//
 // 建立和wpa的通信
 static int connect_to_wpa(WIFI_NODE* node, const char* path) {
     int ret = 0;
@@ -88,6 +92,12 @@ static int proc_is_run(const char *process) {
     return 0;
 }
 
+// 启动进程
+static int proc_run(const char* cmd) {
+    system(cmd);
+    return 0;
+}
+
 int wifi_sta_enable() {
     // 判断是否存在进程
     if (0==proc_is_run("wpa_supplicant")) {
@@ -145,8 +155,126 @@ int wifi_sta_scan()
     } else if (ret<0 || 0==strncmp(node_wlan0.reply, "FAIL", 4)) {
         // 失败
     }
+#if 0
     if (strncmp(cmd, "PING", 4) == 0)
-        node_wlan0.reply[*reply_len] = '\0';
+        node_wlan0.reply[reply_len] = '\0';
+#endif
 
     return 0;
+}
+
+int wifi_ap_enable(WIFI_AP_CONFIG *conf)
+{
+    //int ret = 0;
+    // 判断是否存在进程
+    if (0==proc_is_run("hostapd")) {
+        system("killall hostapd");
+    }
+    if (0==proc_is_run("udhcpd")) {
+        system("killall udhcpd");
+    }
+    // 检查 wpa_supplicant，关闭
+    if (0==proc_is_run("wpa_supplicant")) {
+        // 关闭
+        system("killall wpa_supplicant");
+    }
+    // 如果指定的配置，按照配置创建配置文件
+    if (NULL!=conf) {
+        // 创建 hostapd 配置文件，如果有文件，覆盖
+        FILE* fp = fopen(WIFI_AP_CONF, "w+");
+        if (NULL==fp) {
+            return -NETERR_FOPEN_FAIL;
+        }
+        // 写入内容
+        fputs("interface=wlan0\n", fp);
+        fputs("driver=nl80211\n", fp);
+        fputs("ieee80211n=1\n", fp);
+        fputs("hw_mode=g\n", fp);
+        fputs("channel=6\n", fp);
+        fputs("ignore_broadcast_ssid=0\n", fp);
+        // ssid=815_lab
+        fprintf(fp, "ssid=%s\n", conf->ap.ssid);
+        switch (conf->ap.security) {
+        case WIFI_WPA_PSK:
+            // wpa_passphrase=12345678
+            fprintf(fp, "wpa_passphrase=%s\n", conf->ap.passwd);
+            fputs("wpa=1\n", fp);
+            fputs("wpa_pairwise=CCMP\n", fp);
+            fputs("rsn_pairwise=CCMP\n", fp);
+            fputs("wpa_key_mgmt=WPA-PSK\n", fp);
+            break;
+        case WIFI_WPA2_PSK:
+            // wpa_passphrase=12345678
+            fprintf(fp, "wpa_passphrase=%s\n", conf->ap.passwd);
+            fputs("wpa=2\n", fp);
+            fputs("wpa_pairwise=CCMP\n", fp);
+            fputs("rsn_pairwise=CCMP\n", fp);
+            fputs("wpa_key_mgmt=WPA-PSK\n", fp);
+            break;
+        case WIFI_OPEN:
+        default:
+            break;
+        }
+        fflush(fp);
+        fclose(fp);
+        fp = NULL;
+
+        // 创建 udhcpd 配置文件，如果有文件，覆盖
+        fp = fopen(UDHCPD_CONF, "w+");
+        if (NULL==fp) {
+            return -NETERR_FOPEN_FAIL;
+        }
+        // 写入
+        fputs("interface wlan0\n", fp);
+        fprintf(fp, "start %s\n", conf->dhcpd.startIP);
+        fprintf(fp, "end %s\n", conf->dhcpd.endIP);
+        fprintf(fp, "max_leases %d\n", conf->dhcpd.max_leases);
+        fprintf(fp, "opt router %s\n", conf->dhcpd.opt_router);
+        fflush(fp);
+        fclose(fp);
+    }
+    usleep(300000);
+    // 检查是否有配置文件
+    if (0!=file_exist(WIFI_AP_CONF)) {
+        // 没有配置文件
+        return -NETERR_HOSTAP_CONF_NONE;
+    }
+    if (0!=file_exist(UDHCPD_CONF)) {
+        // 没有配置文件
+        return -NETERR_UDHCPD_CONF_NONE;
+    }
+    // 启动 hostapd
+    //printf("-->> hostapd " WIFI_AP_CONF " -B\n");
+    proc_run("hostapd " WIFI_AP_CONF " -B");
+    // 设置ip
+    system("ifconfig wlan0 172.6.6.1 netmask 255.255.255.0 up");
+    // 启动 udhcpd
+    //printf("udhcpd -f " UDHCPD_CONF " &\n");
+    proc_run("udhcpd -f " UDHCPD_CONF " &");
+    return 0;
+}
+
+int wifi_ap_disable()
+{
+    // 关闭 hostapd 和 udhcpd
+    // 检查 hostapd
+    if (0==proc_is_run("hostapd")) {
+        // 关闭
+        system("killall hostapd");
+    }
+    // 检查 udhcpd
+    if (0==proc_is_run("udhcpd")) {
+        // 关闭
+        system("killall udhcpd");
+    }
+    return 0;
+}
+
+int wifi_ap_reload(WIFI_AP_CONFIG *conf)
+{
+    if (NULL==conf)
+        return -NETERR_CHECK_PARAM;
+    wifi_ap_disable();
+    usleep(100000);
+    return wifi_ap_enable(conf);
 }

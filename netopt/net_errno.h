@@ -50,5 +50,9 @@
 #define NETERR_WPA_CONF_NONE            102 // wpa_supplicant没有配置文件
 #define NETERR_WPA_CONNECT_FAIL         103 // 创建连接wpa_supplicant失败
 #define NETERR_WPA_ATTACH_FAIL          104 // 创建监听wpa_supplicant失败
+#define NETERR_HOSTAP_IS_RUN            105 // hostapd进程运行中
+#define NETERR_HOSTAP_NOT_RUN           106 // hostapd进程未运行
+#define NETERR_HOSTAP_CONF_NONE         107 // hostapd没有配置文件
+#define NETERR_UDHCPD_CONF_NONE         108 // udhcpd没有配置文件
 
 #endif

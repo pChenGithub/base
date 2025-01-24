@@ -3,6 +3,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
 
 int file_exist(const char *file)
 {
@@ -41,4 +43,50 @@ int file_read(const char *file, char *buf, unsigned int buflen)
     int cnt = fread(buf, buflen, 1, fp);
     fclose(fp);
     return cnt;
+}
+
+int dir_exist(const char *dir)
+{
+    return file_exist(dir);
+}
+
+int dir_create(const char *dir)
+{
+    int ret = 0;
+    if (NULL==dir)
+        return -ERR_FILEOPT_CHECKPARAM;
+    int len = strlen(dir);
+    char* path = (char*)calloc(1, len+1);
+    strcpy(path, dir);
+    for (int i=1;i<len;i++) {
+        if (path[i]!='/')
+            continue ;
+        path[i] = 0;
+        if (0==access(path, F_OK)) {
+            // 修改回来
+            path[i] = '/';
+            continue ;
+        }
+        // 一个新的目录，如果不存在，创建
+        if (-1==mkdir(path, 0755)) {
+            // 创建文件夹失败
+            ret = -ERR_FILEOPT_DIR_CREATE;
+            goto end_exit;
+        }
+        // 修改回来
+        path[i] = '/';
+    }
+    // 处理最后一个，最后一个字符有肯能是/结尾，也可能是普通字符
+    if ('/'!=path[len-1]) {
+        // 创建最后一个目录
+        if (-1==mkdir(path, 0755)) {
+            // 创建文件夹失败
+            ret = -ERR_FILEOPT_DIR_CREATE;
+        }
+    }
+
+end_exit:
+    free(path);
+    path = NULL;
+    return ret;
 }

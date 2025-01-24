@@ -65,6 +65,7 @@ int set_ip(const char* ifname, const char* ip) {
     struct ifreq ifcu_req;
     memcpy(ifcu_req.ifr_ifrn.ifrn_name, ifname, strlen(ifname)+1);
     if (ioctl(socketfd, SIOCGIFADDR, &ifcu_req)<0) {
+        perror("设置ip。。。");
         ret = -NETERR_SOCKET_GIFADDR_FAIL;
         goto socket_close_exit;
     }

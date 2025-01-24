@@ -12,6 +12,7 @@ extern "C" {
 #define ERR_FILEOPT_NOT_EXIST   2   // 文件不存在
 #define ERR_FILEOPT_STAT        3   // 对文件执行stat失败
 #define ERR_FILEOPT_FILE_OPEN   4   // 打开文件失败
+#define ERR_FILEOPT_DIR_CREATE  5   // 创建文件夹失败
 
 /** ************************************/
 // 文件读，返回值，错误码，或者读取大小
