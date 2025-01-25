@@ -21,11 +21,6 @@ int get_ip(const char *ifname, char* ip, const int len)
     // struct ifreq，保存了网络接口的信息，包括名字、ip、掩码、广播。链路状态、mac地址
     // struct ifconf 理解为ifreq的集合，但是ifreq的内存需要用户指定
     struct ifreq ifcu_req;
-    struct sockaddr_in r;
-    {
-        /* data */
-    };
-    
     // 检查参数
     if (NULL==ifname || NULL==ip || len<=0)
         return -NETERR_CHECK_PARAM;
@@ -63,16 +58,23 @@ int set_ip(const char* ifname, const char* ip) {
         return -NETERR_SOCKET_FAIL;
 
     struct ifreq ifcu_req;
+    // 添加清0
+    memset(&ifcu_req, 0, sizeof(ifcu_req));
     memcpy(ifcu_req.ifr_ifrn.ifrn_name, ifname, strlen(ifname)+1);
+#if 0
+    // 这部分读的时候，有时候会报错，取消获取，上面添加清0
     if (ioctl(socketfd, SIOCGIFADDR, &ifcu_req)<0) {
         perror("设置ip。。。");
         ret = -NETERR_SOCKET_GIFADDR_FAIL;
         goto socket_close_exit;
     }
+#endif
 
     // 修改ip地址
     struct sockaddr_in* addr = (struct sockaddr_in*)&ifcu_req.ifr_ifru.ifru_addr;
     inet_aton(ip, &addr->sin_addr);
+    addr->sin_family = AF_INET;
+    addr->sin_port = 0;
 #if 0
     // 这里测试过了，这样修改mask函数结束后不能修改调mask
     addr = (struct sockaddr_in*)&ifcu_req.ifr_ifru.ifru_netmask;
@@ -82,7 +84,7 @@ int set_ip(const char* ifname, const char* ip) {
     if (ioctl(socketfd, SIOCSIFADDR, &ifcu_req)<0)
         ret = -NETERR_SOCKET_SIFADDR_FAIL;
 
-socket_close_exit:
+//socket_close_exit:
     close(socketfd);
     return ret;
 }
@@ -238,7 +240,7 @@ int replace_gateway(const char* ifname, const char* ip, const char* mask, const 
             continue;
     }
 
-set_new_gate:    
+//set_new_gate:
     // 重新设置网关
     ret = set_gateway(ifname, ip, mask, dist);
 exit:
@@ -338,20 +340,25 @@ int set_mask(const char* ifname, const char *ip) {
         return -NETERR_SOCKET_FAIL;
 
     struct ifreq ifcu_req;
+    memset(&ifcu_req, 0, sizeof(ifcu_req));
     memcpy(ifcu_req.ifr_ifrn.ifrn_name, ifname, strlen(ifname)+1);
+#if 0
     if (ioctl(socketfd, SIOCGIFNETMASK, &ifcu_req)<0) {
         ret = -NETERR_SOCKET_GIFNETMASK_FAIL;
         goto socket_close_exit;
     }
+#endif
 
     // 修改ip地址
     struct sockaddr_in* addr = (struct sockaddr_in*)&ifcu_req.ifr_ifru.ifru_netmask;
     inet_aton(ip, &addr->sin_addr);
+    addr->sin_family = AF_INET;
+    addr->sin_port = 0;
  
     if (ioctl(socketfd, SIOCSIFNETMASK, &ifcu_req)<0)
         ret = -NETERR_SOCKET_SIFNETMASK_FAIL;
 
-socket_close_exit:
+//socket_close_exit:
     close(socketfd);
     return ret;
 }
@@ -420,7 +427,7 @@ int set_enable(const char* ifname, int opt) {
         //goto socket_close_exit;
     }
 
-socket_close_exit:
+//socket_close_exit:
     close(socketfd);
     return ret;
 }

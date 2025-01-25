@@ -119,9 +119,7 @@ int wifi_sta_enable() {
         return -NETERR_WPA_CONF_NONE;
     }
     // 启动wpa进程，有可能优化
-    char cmd[] = {0};
-    snprintf(cmd, sizeof(cmd), "wpa_supplicant -Dwext -iwlan0 -c "WPA_SUPPLICANT_CONF" -B");
-    system(cmd);
+    proc_run("wpa_supplicant -Dwext -iwlan0 -c "WPA_SUPPLICANT_CONF" -B");
     // 启动完wpa进程之后，连接wpa通信
     int ret = connect_to_wpa(&node_wlan0, WPA_CONNECT_FILE);
     if (ret<0) {
@@ -165,7 +163,7 @@ int wifi_sta_scan()
 
 int wifi_ap_enable(WIFI_AP_CONFIG *conf)
 {
-    //int ret = 0;
+    int ret = 0;
     // 判断是否存在进程
     if (0==proc_is_run("hostapd")) {
         system("killall hostapd");
@@ -247,7 +245,15 @@ int wifi_ap_enable(WIFI_AP_CONFIG *conf)
     //printf("-->> hostapd " WIFI_AP_CONF " -B\n");
     proc_run("hostapd " WIFI_AP_CONF " -B");
     // 设置ip
-    system("ifconfig wlan0 172.6.6.1 netmask 255.255.255.0 up");
+    ret = set_enable("wlan0", NET_LINK_UP);
+    if (ret<0)
+        return ret;
+    ret = set_ip("wlan0", conf->dhcpd.opt_router);
+    if (ret<0)
+        return ret;
+    ret = set_mask("wlan0", conf->dhcpd.mask);
+    if (ret<0)
+        return ret;
     // 启动 udhcpd
     //printf("udhcpd -f " UDHCPD_CONF " &\n");
     proc_run("udhcpd -f " UDHCPD_CONF " &");

@@ -28,6 +28,7 @@ typedef struct {
     char endIP[16];
     int max_leases;
     char opt_router[16];
+    char mask[16];
 } UDHCPD_CONFIG; // dhcpd 配置参数
 typedef struct {
     AP_CONFIG ap;
