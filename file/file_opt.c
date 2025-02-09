@@ -90,3 +90,27 @@ end_exit:
     path = NULL;
     return ret;
 }
+
+int file_write(const char *file, char *buf, unsigned int size)
+{
+    if (NULL==file||NULL==buf||0==size)
+        return -ERR_FILEOPT_CHECKPARAM;
+    FILE* fp = fopen(file, "wb");
+    if (NULL==fp)
+        return -ERR_FILEOPT_FILE_OPEN;
+    int cnt = fwrite(buf, size, 1, fp);
+    fclose(fp);
+    return cnt;
+}
+
+int file_append(const char *file, char *buf, unsigned int size)
+{
+    if (NULL==file||NULL==buf||0==size)
+        return -ERR_FILEOPT_CHECKPARAM;
+    FILE* fp = fopen(file, "ab");
+    if (NULL==fp)
+        return -ERR_FILEOPT_FILE_OPEN;
+    int cnt = fwrite(buf, size, 1, fp);
+    fclose(fp);
+    return cnt;
+}
