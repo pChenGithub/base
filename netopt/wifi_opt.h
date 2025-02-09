@@ -35,7 +35,7 @@ typedef struct {
     UDHCPD_CONFIG dhcpd;
 } WIFI_AP_CONFIG;   // 启动配置参数
 int wifi_ap_enable(WIFI_AP_CONFIG* conf);
-int wifi_ap_reload(WIFI_AP_CONFIG* conf);
+int wifi_ap_reload(WIFI_AP_CONFIG* conf); // 重新设置ap
 int wifi_ap_disable();
 
 #ifdef __cplusplus
