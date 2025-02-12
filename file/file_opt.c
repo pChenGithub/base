@@ -99,6 +99,11 @@ int file_write(const char *file, char *buf, unsigned int size)
     if (NULL==fp)
         return -ERR_FILEOPT_FILE_OPEN;
     int cnt = fwrite(buf, size, 1, fp);
+    if (1!=cnt) {
+        fclose(fp);
+        return -ERR_FILEOPT_FILE_WRITE;
+    }
+    // 关闭
     fclose(fp);
     return cnt;
 }
@@ -111,6 +116,34 @@ int file_append(const char *file, char *buf, unsigned int size)
     if (NULL==fp)
         return -ERR_FILEOPT_FILE_OPEN;
     int cnt = fwrite(buf, size, 1, fp);
+    if (1!=cnt) {
+        fclose(fp);
+        return -ERR_FILEOPT_FILE_WRITE;
+    }
+    // 关闭
     fclose(fp);
     return cnt;
+}
+
+int file_write_fsync(const char *file, char *buf, unsigned int size)
+{
+    if (NULL==file||NULL==buf||0==size)
+        return -ERR_FILEOPT_CHECKPARAM;
+    FILE* fp = fopen(file, "wb");
+    if (NULL==fp)
+        return -ERR_FILEOPT_FILE_OPEN;
+    int cnt = fwrite(buf, size, 1, fp);
+    if (1!=cnt) {
+        fclose(fp);
+        return -ERR_FILEOPT_FILE_WRITE;
+    }
+    // 刷新到硬盘
+    fflush(fp);
+    int fd = fileno(fp);
+    if (-1!=fd)
+        fsync(fd);
+    // 关闭
+    fclose(fp);
+    return cnt;
+
 }
