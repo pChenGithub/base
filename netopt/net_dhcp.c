@@ -3,7 +3,7 @@
 #include <string.h>
 #include "net_dhcp.h"
 #include "net_errno.h"
-#include "../basic/mixshell/mixShell.h"
+#include "mixShell.h"
 
 #define CMDSTR_LEN  64
 #define IFNAME_LEN  16

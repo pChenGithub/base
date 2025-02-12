@@ -219,6 +219,7 @@ int wifi_ap_enable(WIFI_AP_CONFIG *conf)
             break;
         }
         fflush(fp);
+        fsync(fileno(fp));
         fclose(fp);
         fp = NULL;
 
@@ -234,9 +235,10 @@ int wifi_ap_enable(WIFI_AP_CONFIG *conf)
         fprintf(fp, "max_leases %d\n", conf->dhcpd.max_leases);
         fprintf(fp, "opt router %s\n", conf->dhcpd.opt_router);
         fflush(fp);
+        fsync(fileno(fp));
         fclose(fp);
     }
-    usleep(300000);
+    usleep(3000000);
     // 检查是否有配置文件
     if (0!=file_exist(WIFI_AP_CONF)) {
         // 没有配置文件

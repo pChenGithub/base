@@ -13,12 +13,14 @@ extern "C" {
 #define ERR_FILEOPT_STAT        3   // 对文件执行stat失败
 #define ERR_FILEOPT_FILE_OPEN   4   // 打开文件失败
 #define ERR_FILEOPT_DIR_CREATE  5   // 创建文件夹失败
+#define ERR_FILEOPT_FILE_WRITE  6   // 写文件失败
 
 /** ************************************/
 // 文件读，返回值，错误码，或者读取大小
 int file_read(const char* file, char* buf, unsigned int buflen);
 // 文件写，重新写/追加
 int file_write(const char* file, char* buf, unsigned int size);
+int file_write_fsync(const char* file, char* buf, unsigned int size);
 int file_append(const char* file, char* buf, unsigned int size);
 // 文件删除
 int file_remove(const char* file);

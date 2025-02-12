@@ -15,6 +15,7 @@ int set_ip(const char* ifname, const char* ip);
 //int get_gateway(const char* ifname, char *ip, const int len);
 // 设置指定ifname网关
 int set_gateway(const char* ifname, const char* ip, const char* mask, const char* dist);
+int set_gateway_shell(const char* ifname, const char* ip, const char* mask, const char* dist);
 // 设置指定ifname网关，如果存在就删除
 int replace_gateway(const char* ifname, const char* ip, const char* mask, const char* dist);
 // 指定ifname删除网关

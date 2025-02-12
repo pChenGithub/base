@@ -200,7 +200,7 @@ int replace_gateway(const char* ifname, const char* ip, const char* mask, const 
         printf("ret xxx111 %d\n", ret);
         goto exit;
     }
-    printf("获取网关个数 %d\n", routenum);
+    printf("获取相同dist网关个数 %d\n", routenum);
 
     // 清空gate相同的网关
     int count = 10-routenum;
@@ -212,7 +212,7 @@ int replace_gateway(const char* ifname, const char* ip, const char* mask, const 
 
     routenum += count;
 
-    printf("获取网关个数 %d\n", routenum);
+    printf("获取相同gate网关个数 %d\n", routenum);
     // 删除网关
     if (0==routenum) {
         ret = -NETERR_SOCKET_ADDRT;
@@ -221,7 +221,7 @@ int replace_gateway(const char* ifname, const char* ip, const char* mask, const 
 
     int i = 0;
     for (i=0;i<routenum;i++) {
-        printf("获取到网关 dist %s, gate %s, mask %s， devname %s\n",
+        printf("s 获取到网关 dist %s, gate %s, mask %s， devname %s\n",
             list[i].dist, list[i].gate, list[i].mask, list[i].devname);
 
         if (ret = del_gateway(ifname, list[i].dist, "0.0.0.0")==0)
@@ -238,6 +238,8 @@ int replace_gateway(const char* ifname, const char* ip, const char* mask, const 
 
         if (ret = del_gateway(ifname, list[i].dist, "255.255.255.255")==0)
             continue;
+        printf("e 获取到网关 dist %s, gate %s, mask %s， devname %s\n",
+               list[i].dist, list[i].gate, list[i].mask, list[i].devname);
     }
 
 //set_new_gate:
@@ -288,6 +290,7 @@ int del_gateway(const char* ifname, const char* dist, const char* mask) {
         rt.rt_dev = (char*)ifname;
     if ((ret = ioctl(socketfd, SIOCDELRT, &rt))<0) {
         printf("删除网关失败 %d, %s\n", errno, strerror(errno));
+        printf("mask %s\n", mask);
         ret = -NETERR_SOCKET_ADDRT;
         goto socket_close_exit;
     }
@@ -452,4 +455,14 @@ int isIpValid(const char* ip) {
     return ret;
 }
 
-
+int set_gateway_shell(const char *ifname, const char *ip, const char *mask, const char *dist) {
+    (void)mask;
+    char cmd[64] = {0};
+    char* pdist = dist;
+    if (NULL==pdist)
+        pdist = "default";
+    snprintf(cmd, sizeof(cmd), "route add %s gw %s dev %s", pdist, ip, ifname);
+    printf("cmd %s\n", cmd);
+    system(cmd);
+    return 0;
+}
