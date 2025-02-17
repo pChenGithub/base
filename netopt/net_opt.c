@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <net/route.h>
 #include <errno.h>
+#include <stdlib.h>
 
 int get_ip(const char *ifname, char* ip, const int len)
 {
@@ -91,6 +92,9 @@ int set_ip(const char* ifname, const char* ip) {
 
 int get_gateway(const char *ifname, char *ip, const int len)
 {
+    (void)ifname;
+    (void)ip;
+    (void)len;
     int ret = 0;
     struct rtentry rt;
     struct sockaddr_in* sockaddr = NULL;
@@ -223,21 +227,11 @@ int replace_gateway(const char* ifname, const char* ip, const char* mask, const 
     for (i=0;i<routenum;i++) {
         printf("s 获取到网关 dist %s, gate %s, mask %s， devname %s\n",
             list[i].dist, list[i].gate, list[i].mask, list[i].devname);
-
-        if (ret = del_gateway(ifname, list[i].dist, "0.0.0.0")==0)
-            continue;
-
-        if (ret = del_gateway(ifname, list[i].dist, "255.0.0.0")==0)
-            continue;
-
-        if (ret = del_gateway(ifname, list[i].dist, "255.255.0.0")==0)
-            continue;
-
-        if (ret = del_gateway(ifname, list[i].dist, "255.255.255.0")==0)
-            continue;
-
-        if (ret = del_gateway(ifname, list[i].dist, "255.255.255.255")==0)
-            continue;
+        if ((ret=del_gateway(ifname, list[i].dist, "0.0.0.0"))==0)continue;
+        if ((ret=del_gateway(ifname, list[i].dist, "255.0.0.0"))==0)continue;
+        if ((ret=del_gateway(ifname, list[i].dist, "255.255.0.0"))==0)continue;
+        if ((ret=del_gateway(ifname, list[i].dist, "255.255.255.0"))==0)continue;
+        if ((ret=del_gateway(ifname, list[i].dist, "255.255.255.255"))==0)continue;
         printf("e 获取到网关 dist %s, gate %s, mask %s， devname %s\n",
                list[i].dist, list[i].gate, list[i].mask, list[i].devname);
     }
@@ -458,7 +452,7 @@ int isIpValid(const char* ip) {
 int set_gateway_shell(const char *ifname, const char *ip, const char *mask, const char *dist) {
     (void)mask;
     char cmd[64] = {0};
-    char* pdist = dist;
+    const char* pdist = dist;
     if (NULL==pdist)
         pdist = "default";
     snprintf(cmd, sizeof(cmd), "route add %s gw %s dev %s", pdist, ip, ifname);
