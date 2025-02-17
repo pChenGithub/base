@@ -1,0 +1,2 @@
+# aarch64编译
+PWD=`pwd`;./configure --host=arm-linux CC=/home/cp/tmp/toolchain/gcc-linaro-10.2.1-2021.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc --prefix=$PWD/../build_aarch64arm --with-openssl=$PWD/../../openssl/buid_aarch64 --disable-tls-srp --disable-rtsp --disable-hsts --disable-alt-svc --disable-mqtt --disable-ftp --disable-tftp --disable-smb --disable-gopher --disable-imap --disable-pop3 --disable-smtp --disable-telnet --disable-dict

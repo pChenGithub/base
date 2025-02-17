@@ -1,0 +1,2 @@
+# aarch64交叉编译
+PWD=`pwd`;./config no-asm no-async -shared --cross-compile-prefix=/home/cp/tmp/toolchain/gcc-linaro-10.2.1-2021.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu- --prefix=$PWD/../buid_aarch64
