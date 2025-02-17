@@ -1,4 +1,5 @@
 #include "timeopt.h"
+#include "mixShell.h"
 #include <time.h>
 #include <sys/time.h>
 #include <stdio.h>
@@ -6,10 +7,16 @@
 #include <stdlib.h>
 
 int getStdTime(char* hour, char* min, char* sec) {
+    (void)hour;
+    (void)min;
+    (void)sec;
     return 0;
 }
 
 int getStdDate(char* year, char* month, char* day) {
+    (void)year;
+    (void)month;
+    (void)day;
     return 0;
 }
 

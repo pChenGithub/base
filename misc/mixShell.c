@@ -2,6 +2,7 @@
 #include "mixShell_errno.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /**
  * @brief exeShell

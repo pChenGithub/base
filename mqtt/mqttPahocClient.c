@@ -19,6 +19,7 @@
  */
 static int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
+    (void)topicLen;
     printf("recv mqtt msg\n");
 #if 0
     printf("Message arrived\n");
@@ -86,6 +87,7 @@ static void connlost(void *context, char *cause)
 static void delivered(void *context, MQTTClient_deliveryToken dt)
 {
     (void)(context);
+    (void)dt;
     //printf("Message with token value %d delivery confirmed\n", dt);
 }
 
