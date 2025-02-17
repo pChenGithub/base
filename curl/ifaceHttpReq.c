@@ -1,5 +1,5 @@
 ﻿#include "ifaceHttpReq.h"
-#include "include/curl/curl.h"
+#include "curl/curl.h"
 #include "global.h"
 
 #include <string.h>
@@ -14,7 +14,7 @@ static int http_reply_file(const char* buffer, int len, void* arg)
 {
     HTTP_REPLY* reply = (HTTP_REPLY*)arg;
     FILE* fp = reply->p;
-    int maxLen = reply->len;
+//    int maxLen = reply->len;
 
 //    if(maxLen <= (reply->offset + len))
 //    {
