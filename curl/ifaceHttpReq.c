@@ -209,7 +209,7 @@ curlInitError:
     if(NULL != headers)
     {
         curl_slist_free_all(headers);
-    }\
+    }
 
     if(NULL != curl)
     {
