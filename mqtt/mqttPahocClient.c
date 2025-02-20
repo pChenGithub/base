@@ -20,7 +20,7 @@
 static int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
     (void)topicLen;
-    printf("recv mqtt msg\n");
+    //printf("recv mqtt msg\n");
 #if 0
     printf("Message arrived\n");
     printf("     topic: %s\n", topicName);
@@ -275,7 +275,7 @@ int pushOneMessage(MQClient* client, const char *topic, const char *message, RET
     pubmsg->payloadlen = strlen(message);
     pubmsg->qos = QOS;
     pubmsg->retained = type;
-    printf("topic %s\n", topic);
+    //printf("topic %s\n", topic);
     ret = MQTTClient_publishMessage(pclient->client, topic, pubmsg, &(pclient->token));
     if (MQTTCLIENT_SUCCESS != ret)
     {
@@ -346,7 +346,7 @@ int pushOneMessageWait(MQClient *client, const char *topic, const char *message,
         ret = -MQERR_SENDMSG;
         goto end_unsub;
     }
-    printf("publish message OK\n");
+    //printf("publish message OK\n");
 
     ret = MQTTClient_waitForCompletion(pclient->client, pclient->token, SENDMSG_TIMEOUT_MS);
     if (MQTTCLIENT_SUCCESS != ret)
@@ -375,7 +375,7 @@ int pushOneMessageWait(MQClient *client, const char *topic, const char *message,
         goto end_unsub;
     }
 
-    printf("wait message OK\n");
+    //printf("wait message OK\n");
 
     if (0!=pclient->waitRetCode)
     {
@@ -393,10 +393,10 @@ end_unsub:
     pclient->waitDataLen = 0;
     MQTTClient_unsubscribe(pclient->client, waitTopic);
 end_exit:
-    printf("unlock exit\n");
+    //printf("unlock exit\n");
     // 解锁
     pthread_mutex_unlock(&(pclient->lockmsg));
-    printf("push exit\n");
+    //printf("push exit\n");
     return ret;
 }
 

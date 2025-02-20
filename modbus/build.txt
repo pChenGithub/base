@@ -1,0 +1,2 @@
+# aarch64编译
+PWD=`pwd`;./configure --host=arm-linux CC=/home/cp/tmp/toolchain/gcc-linaro-10.2.1-2021.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc --prefix=$PWD/../build_aarch64arm
