@@ -28,7 +28,7 @@ static void* wait_uart(void* arg) {
         FD_ZERO(&rfds);
         FD_SET(pentry->fd, &rfds);
         // 第一个参数,监听最大描述符值加1
-        printf("等待数据...\n");
+        //printf("等待数据...\n");
         ret = select(pentry->fd+1, &rfds, NULL, NULL, NULL);
         if (ret<0) {
             printf("select 执行失败\n");
@@ -44,7 +44,7 @@ static void* wait_uart(void* arg) {
         pbuff = pentry->rcvbuff;
         buffsize = sizeof(pentry->rcvbuff);
         datasize = 0;
-        printf("开始读取数据...\n");
+        //printf("开始读取数据...\n");
 flag_read_uart:
         // 这里需要处理串口的数据分段
         ret = read(pentry->fd, pbuff, buffsize);
@@ -67,7 +67,7 @@ flag_read_uart:
             printf("select 执行失败, 结束\n");
         } else if (0==ret) {
             // 超时
-            printf("select 等待超时, 结束读数据\n");
+            //printf("select 等待超时, 结束读数据\n");
         } else {
             // 继续读取数据
             goto flag_read_uart;
@@ -165,6 +165,7 @@ int stop_uart(UART_ENTRY* entry) {
         return -UART_MOUDLE_ERR_CHECKPARAM;
     if (entry->pid>0) {
         pthread_cancel(entry->pid);
+        printf("等待回收, 线程号 %ld\n", entry->pid);
         pthread_join(entry->pid, NULL);
         printf("回收完成, 线程号 %ld\n", entry->pid);
     }
@@ -221,20 +222,17 @@ int set_uart(UART_ENTRY* entry, UART_MOUDLE_BAUDRATE_TYPE speed,
     options.c_cflag |= (CLOCAL | CREAD);
     // 不使用流控制
     options.c_cflag &= ~CRTSCTS;
-
      // 无校验
     options.c_cflag &= ~PARENB;
     // 设置停止位
     options.c_cflag &= ~CSTOPB;
-
     // 设置最少字符和等待时间
     options.c_cc[VMIN] = 1;     // 读数据的最小字节数
     options.c_cc[VTIME]  = 0;   //等待第1个数据，单位是10s
-
     // 修改输出模式，原始数据输出
     options.c_oflag &= ~OPOST;
     options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
-
+    options.c_iflag &= ~(ICRNL | IXON);
     // 清空终端未完成的数据
     tcflush(entry->fd, TCIFLUSH);
     // 设置新的参数
@@ -316,4 +314,30 @@ int set_uart_ck(UART_ENTRY* entry, hand_uart_msg hand) {
         return -UART_MOUDLE_ERR_CHECKPARAM;
     entry->hand_msg = hand;
     return 0;
+}
+
+int send_uart_one(UART_ENTRY* entry, const unsigned char *send, int sendlen)
+{
+    int ret = 0;
+    if (NULL==entry || NULL==send)
+        return -UART_MOUDLE_ERR_CHECKPARAM;
+
+    // 加锁, 设置超时,
+    int timeout = UM_LOCKTIMEOUT_10MS;
+    while (timeout && 0!=pthread_mutex_trylock(&(entry->lockmsg))) {
+        usleep(10000);
+        timeout--;
+    }
+    // 判断是否超时
+    if (timeout<=0)
+        return -UART_MOUDLE_ERR_TIMEOUT;
+
+    ret = write(entry->fd, send, sendlen);
+    if (ret<0) {
+        printf("写串口失败\n");
+    }
+
+    // 解锁
+    pthread_mutex_unlock(&(entry->lockmsg));
+    return ret;
 }

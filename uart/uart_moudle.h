@@ -83,7 +83,7 @@ int set_uart_ck(UART_ENTRY* entry, hand_uart_msg hand);
 int send_byte_uart_wait(UART_ENTRY* entry, const unsigned char *send, int sendlen, unsigned char *recv, int recvlen, int waitMs);
 int send_uart_wait(UART_ENTRY* entry, const char* send, char* recv, int recvlen, int waitMs);
 // 发送消息,不等,异步
-int send_uart_one();
+int send_uart_one(UART_ENTRY* entry, const unsigned char *send, int sendlen);
 
 #ifdef __cplusplus
 }
