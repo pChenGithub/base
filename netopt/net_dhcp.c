@@ -41,7 +41,7 @@ static void* run_dhcp(void* arg) {
     printf("执行的命令 %s\n", pcmd->cmdstr);
 
     if (pcmd->hand)
-        pcmd->hand(DHCP_RUNNING);
+        pcmd->hand(DHCP_RUNNING, pcmd->ifname);
 
 dhcp_again:
     ret = exeShellWait(pcmd->cmdstr, hand_retstr);
@@ -49,7 +49,7 @@ dhcp_again:
         //printf("执行的命令失败，错误码 %d\n", ret);
         ret = 0;
         if (pcmd->hand)
-            ret = pcmd->hand(DHCP_FAIL_END);
+            ret = pcmd->hand(DHCP_FAIL_END, pcmd->ifname);
         if (-NET_DHCP_AGAIN==ret)
             goto dhcp_again;
         else
@@ -57,7 +57,7 @@ dhcp_again:
     }
     //printf("执行的命令成功，结果 %s\n", pcmd->cmdstr);   
     if (pcmd->hand)
-        pcmd->hand(DHCP_SUCC_END);
+        pcmd->hand(DHCP_SUCC_END, pcmd->ifname);
 
 exit:
     // 变回干净

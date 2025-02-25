@@ -10,7 +10,7 @@ typedef enum {
     DHCP_SUCC_END,
 } DHCP_STATUS;
 
-typedef int (*hand_dhcpstatus)(DHCP_STATUS sta);
+typedef int (*hand_dhcpstatus)(DHCP_STATUS sta, const char* ifname);
 int start_dhcp(const char* ifname, int timeouts, hand_dhcpstatus hand);
 int stop_dhcp(const char* ifname);
 #ifdef __cplusplus
