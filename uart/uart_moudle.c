@@ -290,6 +290,7 @@ int send_byte_uart_wait(UART_ENTRY* entry, const unsigned char* send, int sendle
     }
     printf("wait message OK\n");
 
+    ret = 0;
     if (0!=entry->wait_code) {
         ret = entry->wait_code;
         //goto reset_flag;
