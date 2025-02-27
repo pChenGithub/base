@@ -1,6 +1,10 @@
 #include "string_opt.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
+#include <time.h>
+#include <sys/time.h>
+#include <string.h>
 
 // 字符串的16进制转数值的16进制，比如 "AABB2345" 转成 char buf[] = {0xAA, 0xBB, 0x23, 0x45}
 // 需要自己控制输入与输出的长度，函数内部只判断输出是不是为0
@@ -268,4 +272,35 @@ char *C2Str(char *out, int outlen, char in)
         return NULL;
     snprintf(out, outlen, "%d", in);
     return out;
+}
+
+void printLog(const char *file, int line, const char* func, const char* format, ...)
+{
+    if (NULL==file||NULL==func||NULL==format)
+        return ;
+    va_list args;
+    // 获取当前时间
+    struct timeval s_tv;
+    struct tm s_ptm;
+    char time_str[44] = {0};
+    gettimeofday(&s_tv , NULL);
+    if (NULL==localtime_r(&s_tv.tv_sec, &s_ptm))
+        return ;
+    // 02-27 10:08:00.100
+    // mm-dd hh:mm:ss.ms
+    snprintf(time_str, sizeof(time_str), "%02d-%02d %02d:%02d:%02d.%03ld",
+             s_ptm.tm_mon+1,s_ptm.tm_mday,s_ptm.tm_hour,
+             s_ptm.tm_min,s_ptm.tm_sec,s_tv.tv_usec/1000);
+    // 去除文件案绝对路径
+    const char* pfile = strrchr(file, '/')+1;
+    if ((const char*)1==pfile)
+        pfile = file;
+    // 打印日志信息
+    va_start(args, format);
+    printf("[%s] %s:%d %s: ", time_str, pfile, line, func);
+    vprintf(format, args);
+    printf("\n");
+
+    va_end(args);
+    fflush(stdout);
 }

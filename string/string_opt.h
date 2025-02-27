@@ -47,6 +47,8 @@ int ipStr2Byte4(unsigned char* ipBytes, const char* ip);
 // 从url字符串获取主机域名/IP
 char *getHostFromUrl(const char* url, char* host, int len);
 //-----------------------------------------------------
+// 打印日志
+void printLog(const char* file, int line, const char *func, const char *fomat, ...);
 #ifdef __cplusplus
 }
 #endif
