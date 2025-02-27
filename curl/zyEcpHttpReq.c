@@ -59,7 +59,8 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     int ret = 0;
     // 校验参数
     // 校验token，如果过期，重新获取
-    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET);
+    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET,
+                       outdata, outdatalen);
     if (ret<0)
     {
         return -HTTPERROR_GET_TOKEN;
@@ -89,10 +90,10 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     }
 
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
-    char addr[1024] = {0};
-    snprintf(addr, sizeof(addr), "%s?access_token=%s", url, g_dev_meta.workInfo.access_token);
+    // 借用reply.p
+    snprintf(reply.p, reply.len, "%s?access_token=%s", url, g_dev_meta.workInfo.access_token);
     //LOG_I("url %s", addr);
-    curl_easy_setopt(curl, CURLOPT_URL, addr);
+    curl_easy_setopt(curl, CURLOPT_URL, reply.p);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 2000L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -146,9 +147,14 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     return ret;
 }
 
-int httpGetToken(const char *url, const char *appid, char *appsecret)
+int httpGetToken(const char *url, const char *appid, char *appsecret,
+                 char *outdata, const int outdatalen)
 {
     if(NULL == url || NULL == appid || NULL==appsecret)
+    {
+        return -HTTPERROR_CHECK_PAREM;
+    }
+    if (NULL==outdata)
     {
         return -HTTPERROR_CHECK_PAREM;
     }
@@ -174,23 +180,18 @@ int httpGetToken(const char *url, const char *appid, char *appsecret)
     reply.opt = http_reply_json;
     // 有返回内容，把缓存指向data，并且指定长度,
     // 这两个参数的检查会在接收数据的时候判断
-    reply.p = calloc(1, 1024);
-    if (NULL==reply.p)
-    {
-        return -HTTPERROR_MALLOC;
-    }
-    reply.len = 1024;
+    reply.p = outdata;
+    reply.len = outdatalen;
 
     curl = curl_easy_init();
     if(NULL == curl)
     {
-        ret = -HTTPERROR_CURL_INIT;
-        goto free_buff;
+        return -HTTPERROR_CURL_INIT;
     }
 
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "GET");
     // 借用reply.p
-    snprintf(reply.p, 1024, "%s?appid=%s&appsecret=%s", url, appid, appsecret);
+    snprintf(reply.p, reply.len, "%s?appid=%s&appsecret=%s", url, appid, appsecret);
     curl_easy_setopt(curl, CURLOPT_URL, reply.p);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 2000L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -229,6 +230,9 @@ int httpGetToken(const char *url, const char *appid, char *appsecret)
     {
         ret = reply.ret;
     }
+    // 请求结果异常，返回
+    if (ret<0)
+        goto curlInitError;
 
     //printf("<== %s\n", (char*)reply.p);
     // 解析返回json，保存token
@@ -263,18 +267,17 @@ free_json:
 curlInitError:
     //curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-free_buff:
-    free(reply.p);
-    reply.p = NULL;
     return ret;
 }
 
-int httpDelEcpDev(const char *url, const char *device_sn, char *app_secret, char *outdata, const int outdatalen)
+int httpDelEcpDev(const char *url, const char *device_sn, char *app_secret,
+                  char *outdata, const int outdatalen)
 {
     int ret = 0;
     // 校验参数
     // 校验token，如果过期，重新获取
-    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET);
+    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET,
+                       outdata, outdatalen);
     if (ret<0)
     {
         return -HTTPERROR_GET_TOKEN;
@@ -301,12 +304,11 @@ int httpDelEcpDev(const char *url, const char *device_sn, char *app_secret, char
     }
 
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    //
-    char addr[1024] = {0};
-    snprintf(addr, sizeof(addr), "%s?access_token=%s&device_sn=%s&app_secret=%s", url,
+    // 借用reply.p
+    snprintf(reply.p, reply.len, "%s?access_token=%s&device_sn=%s&app_secret=%s", url,
              g_dev_meta.workInfo.access_token, device_sn, app_secret);
     //LOG_I("url %s", addr);
-    curl_easy_setopt(curl, CURLOPT_URL, addr);
+    curl_easy_setopt(curl, CURLOPT_URL, reply.p);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 2000L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);

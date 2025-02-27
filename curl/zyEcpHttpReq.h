@@ -17,7 +17,7 @@ extern "C" {
 #define HTTPERROR_GET_FILED_VAL     101 // 获取json字段值失败
 #define HTTPERROR_GET_TOKEN         102 // 获取token失败
 
-int httpGetToken(const char* url, const char* appid, char* appsecret);
+int httpGetToken(const char* url, const char* appid, char* appsecret, char* outdata, const int outdatalen);
 int httpAddEcpDev(const char* url, const char* indata, char* outdata, const int outdatalen);
 int httpDelEcpDev(const char* url, const char* device_sn, char* app_secret, char *outdata, const int outdatalen);
 
