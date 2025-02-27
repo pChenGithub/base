@@ -297,7 +297,7 @@ void printLog(const char *file, int line, const char* func, const char* format, 
         pfile = file;
     // 打印日志信息
     va_start(args, format);
-    printf("[%s] %s:%d %s: ", time_str, pfile, line, func);
+    printf("[%s] %s:%d %s:", time_str, pfile, line, func);
     vprintf(format, args);
     printf("\n");
 
