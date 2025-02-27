@@ -89,10 +89,10 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     }
 
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
-    // 借用reply.p
-    snprintf(reply.p, reply.len, "%s?access_token=%s", url, g_dev_meta.workInfo.access_token);
-    //LOG_I("url %s", reply.p);
-    curl_easy_setopt(curl, CURLOPT_URL, reply.p);
+    char addr[1024] = {0};
+    snprintf(addr, sizeof(addr), "%s?access_token=%s", url, g_dev_meta.workInfo.access_token);
+    //LOG_I("url %s", addr);
+    curl_easy_setopt(curl, CURLOPT_URL, addr);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 2000L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -109,7 +109,7 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     // body有长度，填入body
     if(0 != lenght)
     {
-        //LOG_I("httpreq %s", indata);
+        LOG_I("httpreq %s", indata);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, indata);
         //curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(indata));
     }
@@ -139,8 +139,6 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     {
         ret = reply.ret;
     }
-    // 修改正确返回
-    ret = 0;
 
 //curlInitError:
     curl_slist_free_all(headers);
@@ -349,8 +347,6 @@ int httpDelEcpDev(const char *url, const char *device_sn, char *app_secret, char
     {
         ret = reply.ret;
     }
-    // 修改正确返回
-    ret = 0;
 
 //curlInitError:
     //curl_slist_free_all(headers);
