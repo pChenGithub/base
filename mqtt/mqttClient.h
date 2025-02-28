@@ -35,15 +35,17 @@ typedef enum {
     MQTYPE_PAHOC = 0,
 } MQTYPE;
 
-typedef int (*handleMessage)(const char* topic, const char* payload, const int payloadlen);
-typedef int (*handleLost)(const char* cause);
-typedef int (*handleComplate)();
+typedef int (*handleMessage)(const char* topic, const char* payload,
+                             const int payloadlen, void* arg);
+typedef int (*handleLost)(const char* cause, void* arg);
+typedef int (*handleComplate)(void* arg);
 
 typedef struct {
     MQTYPE type;
     handleMessage msgarrive;
     handleLost connectlost;
     handleComplate sendcomplate;
+    void* context;
 } MQClient;
 
 // 创建一个mqtt客户端
@@ -51,7 +53,8 @@ int createMqttclient(MQClient **client, const char *addr, const char *clientid, 
 // 销毁mqtt客户端
 int destroyMqttclient(MQClient* client);
 // 设置回调函数
-int setCallBack(MQClient* client, handleMessage msgarrive, handleLost connectlost, handleComplate sendcomplate);
+int setCallBack(MQClient* client, void* context, handleMessage msgarrive,
+                handleLost connectlost, handleComplate sendcomplate);
 // 提交一条消息
 typedef enum {
     RETAINED_OFF = 0,

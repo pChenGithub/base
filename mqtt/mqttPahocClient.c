@@ -51,7 +51,8 @@ ret_syncpush:
     goto end_push;
 end_syncpush:
     if (NULL!=pclient->base.msgarrive)
-        pclient->base.msgarrive(topicName, message->payload, message->payloadlen);
+        pclient->base.msgarrive(topicName, message->payload,
+                                message->payloadlen, pclient->base.context);
 end_push:
     MQTTClient_freeMessage(&message);
     MQTTClient_free(topicName);
@@ -75,7 +76,7 @@ static void connlost(void *context, char *cause)
     // 这里开始处理连接丢失消息
     MQClientPahoC *pclient = (MQClientPahoC *)context;
     if (NULL!=pclient->base.connectlost)
-        pclient->base.connectlost(cause);
+        pclient->base.connectlost(cause, pclient->base.context);
 }
 
 /**
@@ -96,7 +97,8 @@ static void delivered(void *context, MQTTClient_deliveryToken dt)
  * 创建一个mqtt客户端,完成建立连接,设置回调
  * client:  返回创建的 MQClient
  */
-int createMqttclient(MQClient **client, const char *addr, const char *clientid, const char* username, const char* passw) {
+int createMqttclient(MQClient **client, const char *addr, const char *clientid,
+                     const char* username, const char* passw) {
     int ret = 0;
     if (NULL == client || NULL==addr || NULL==clientid)
         return -MQERR_CHECK_PARAM;
@@ -400,7 +402,8 @@ end_exit:
     return ret;
 }
 
-int setCallBack(MQClient* client, handleMessage msgarrive, handleLost connectlost, handleComplate sendcomplate) {
+int setCallBack(MQClient* client, void *context, handleMessage msgarrive,
+                handleLost connectlost, handleComplate sendcomplate) {
     (void)sendcomplate;
     if (NULL==client || NULL==msgarrive || NULL==connectlost)
         return -MQERR_CHECK_PARAM;
@@ -414,6 +417,7 @@ int setCallBack(MQClient* client, handleMessage msgarrive, handleLost connectlos
 #else
     client->sendcomplate = sendcomplate;
 #endif
+    client->context = context;
     return 0;
 }
 
