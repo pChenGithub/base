@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 #include "mqttClient.h"
-#include "paho.mqtt.c-1.3.9/src/MQTTClient.h"
+#include "MQTTClient.h"
 #include <pthread.h>
 #include <semaphore.h>
 

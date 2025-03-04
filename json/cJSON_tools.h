@@ -6,6 +6,7 @@ extern "C" {
 #include "cJSON.h"
 #include "json_errno.h"
 // 获取json字段内容
+int getfield_strPoint(cJSON* obj, const char* label, char** pstr);
 int getfield_str(cJSON* obj, const char* label, char* buff, unsigned int bufflen);
 int getfield_int(cJSON* obj, const char* label, int* retval);
 #ifdef __cplusplus

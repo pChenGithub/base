@@ -55,3 +55,22 @@ int getfield_int(cJSON *obj, const char *label, int *retval)
     }
     return 0;
 }
+
+int getfield_strPoint(cJSON *obj, const char *label, char **pstr)
+{
+    if (NULL==obj||NULL==label||NULL==pstr)
+        return -ERR_JSON_CHECKPARAM;
+    // 获取字段
+    cJSON* item = cJSON_GetObjectItem(obj, label);
+    if (NULL==item)
+        return -ERR_JSON_HASNO_FIELD;
+    switch (item->type) {
+    case cJSON_String:
+        *pstr = item->valuestring;
+        break;
+    default:
+        return -ERR_JSON_DATA_TYPE;
+        break;
+    }
+    return 0;
+}
