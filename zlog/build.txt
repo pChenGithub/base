@@ -1,0 +1,1 @@
+cmake ../zlog-1.2.18 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_INSTALL_PREFIX=../
