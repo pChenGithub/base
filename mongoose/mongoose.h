@@ -419,12 +419,12 @@ static __inline struct tm *localtime_r(time_t *t, struct tm *tm) {
 
 // Granularity of the send/recv IO buffer growth
 #ifndef MG_IO_SIZE
-#define MG_IO_SIZE 512
+#define MG_IO_SIZE (1 * 1024 * 1024)
 #endif
 
 // Maximum size of the recv IO buffer
 #ifndef MG_MAX_RECV_BUF_SIZE
-#define MG_MAX_RECV_BUF_SIZE (3 * 1024 * 1024)
+#define MG_MAX_RECV_BUF_SIZE (100 * 1024 * 1024)
 #endif
 
 #ifndef MG_MAX_HTTP_HEADERS

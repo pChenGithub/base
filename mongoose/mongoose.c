@@ -390,6 +390,8 @@ void mg_resolve(struct mg_connection *c, struct mg_str *name, int ms) {
 
 
 void mg_call(struct mg_connection *c, int ev, void *ev_data) {
+    // pfn=http_cb  pfn_data=&webApp.mMgr
+    // fn=webEventCb  fn_data=&webApp.mMgr
   if (c->pfn != NULL) c->pfn(c, ev, ev_data, c->pfn_data);
   if (c->fn != NULL) c->fn(c, ev, ev_data, c->fn_data);
 }
@@ -2812,11 +2814,14 @@ static long mg_sock_recv(struct mg_connection *c, void *buf, size_t len) {
 // (e.g. FreeRTOS stack) return 0 instead of -1/EWOULDBLOCK when no data
 static void read_conn(struct mg_connection *c) {
   if (c->recv.len >= MG_MAX_RECV_BUF_SIZE) {
+      // 如果超过最大限制，报错
     mg_error(c, "max_recv_buf_size reached");
   } else if (c->recv.size - c->recv.len < MG_IO_SIZE &&
              !mg_iobuf_resize(&c->recv, c->recv.size + MG_IO_SIZE)) {
+      // 如果剩余空间不足MG_IO_SIZE，重新分配增加空间
     mg_error(c, "oom");
   } else {
+      // 读取数据，填入缓存
     char *buf = (char *) &c->recv.buf[c->recv.len];
     size_t len = c->recv.size - c->recv.len;
     long n = c->is_tls ? mg_tls_recv(c, buf, len) : mg_sock_recv(c, buf, len);
@@ -2838,6 +2843,7 @@ static void read_conn(struct mg_connection *c) {
         free(s);
       }
       c->recv.len += (size_t) n;
+      // 回调一个MG_EV_READ给用户
       mg_call(c, MG_EV_READ, &evd);
     }
   }
