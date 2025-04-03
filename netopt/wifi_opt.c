@@ -1,6 +1,7 @@
 #include "wifi_opt.h"
 #include "net_errno.h"
 #include "file_opt.h"
+#include "global.h"
 #include "wpas/wpa_ctrl.h"
 #include "net_opt.h"
 #include <stdio.h>
@@ -9,8 +10,8 @@
 #include <string.h>
 #define WPA_SUPPLICANT_CONF ""
 #define WPA_CONNECT_FILE    "/var/run/wpa_supplicant"
-#define WIFI_AP_CONF        "/home/rockchip/zytk_gate/data/ap.conf"
-#define UDHCPD_CONF         "/home/rockchip/zytk_gate/data/dhcpd.conf"
+#define WIFI_AP_CONF        PROJECT_DIR_CONFIG"/ap.conf"
+#define UDHCPD_CONF         PROJECT_DIR_CONFIG"/dhcpd.conf"
 //
 #define PROC_IS_EXIST   0   // 进程存在
 //
