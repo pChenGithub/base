@@ -91,7 +91,7 @@ end_exit:
     return ret;
 }
 
-int file_write(const char *file, char *buf, unsigned int size)
+int file_write(const char *file, const char *buf, unsigned int size)
 {
     if (NULL==file||NULL==buf||0==size)
         return -ERR_FILEOPT_CHECKPARAM;
@@ -108,7 +108,7 @@ int file_write(const char *file, char *buf, unsigned int size)
     return cnt;
 }
 
-int file_append(const char *file, char *buf, unsigned int size)
+int file_append(const char *file, const char *buf, unsigned int size)
 {
     if (NULL==file||NULL==buf||0==size)
         return -ERR_FILEOPT_CHECKPARAM;
@@ -125,7 +125,7 @@ int file_append(const char *file, char *buf, unsigned int size)
     return cnt;
 }
 
-int file_write_fsync(const char *file, char *buf, unsigned int size)
+int file_write_fsync(const char *file, const char *buf, unsigned int size)
 {
     if (NULL==file||NULL==buf||0==size)
         return -ERR_FILEOPT_CHECKPARAM;
@@ -146,4 +146,19 @@ int file_write_fsync(const char *file, char *buf, unsigned int size)
     fclose(fp);
     return cnt;
 
+}
+
+int file_remove(const char *file)
+{
+    int ret = file_exist(file);
+    if (ret<0)
+        return ret;
+    if (0!=remove(file))
+        return -ERR_FILEOPT_FILE_REMOVE;
+    return 0;
+}
+
+int dir_remove(const char *dir)
+{
+    return file_remove(dir);
 }
