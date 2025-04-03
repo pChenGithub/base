@@ -1,17 +1,18 @@
 #include "mac_opt.h"
 #include "string_opt.h"
+#include "file_opt.h"
 #include <stdio.h>
 #include <ctype.h>
+#include <stdlib.h>
 
-#define MAC_FILE "/sys/class/net/eth0/address"
 //读取mac并转换成sn
 int mac_to_snstr(const char* mac_file, char* buf, int len) {
     int ret = 0;
     char mac[18] = {0};
-    if (NULL==buf || len<13)
+    if (NULL==mac_file||NULL==buf || len<13)
         return -MACOPTERR_CHECKPARAM;
 
-    FILE* fp = fopen(MAC_FILE, "r");
+    FILE* fp = fopen(mac_file, "r");
     if (NULL==fp)
         return -MACOPTERR_FOPEN_FAIL;
 
@@ -56,4 +57,18 @@ int mac_to_snarray(const char* mac_file, char* buf, int len) {
         return -MACOPTERR_HEXSTR_TOARRAY;
 
     return 0;
+}
+
+int get_cpu_temperature(const char* file)
+{
+    if (NULL==file)
+        return -MACOPTERR_CHECKPARAM;
+    char buff[8] = {0};
+    int ret = file_read(file, buff, sizeof(buff));
+    if (ret<0)
+    {
+        return -SYSOPTERR_READ_FILE;
+    }
+    //printf("温度 %s\n", buff);
+    return (atoi(buff));
 }
