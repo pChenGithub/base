@@ -629,7 +629,7 @@ int httpReqTimeout(HTTP_REPLY_TYPE type, const char* url, const char* indata,
     if(RET_JSON == type && 0 != lenght)
     {
         #if HTTP_DEBUG
-        LOG_I("发送数据 【%s】\n url 【%s】", indata, url);
+        //LOG_I("发送数据 【%s】\n url 【%s】", indata, url);
         #endif
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, indata);
         //curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(indata));
@@ -639,9 +639,9 @@ int httpReqTimeout(HTTP_REPLY_TYPE type, const char* url, const char* indata,
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &reply);
 
     // 执行请求,等待回调结束
-    LOG_D("=========req send=========");
+    //LOG_D("=========req send=========");
     res = curl_easy_perform(curl);
-    LOG_D("=========req recv=========");
+    //LOG_D("=========req recv=========");
     if(res != CURLE_OK)
     {
         LOG_E("请求错误码 %d", res);
@@ -663,7 +663,7 @@ int httpReqTimeout(HTTP_REPLY_TYPE type, const char* url, const char* indata,
         ret = reply.ret;
     }
 
-    LOG_D("len:%d offset:%d ret:%d", reply.len,reply.offset,reply.ret);
+    //LOG_D("len:%d offset:%d ret:%d", reply.len,reply.offset,reply.ret);
 
     #if 0
     if((reply.offset < 1024*4)&&(reply.offset > 0))
