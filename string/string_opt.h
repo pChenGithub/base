@@ -49,6 +49,12 @@ char *getHostFromUrl(const char* url, char* host, int len);
 //-----------------------------------------------------
 // 打印日志
 void printLog(const char* file, int line, const char *func, const char *fomat, ...);
+//-----------------------------------------------------
+// 数组大小端处理
+//-----------------------------------------------------
+// 小端转换一次，传入数据和长度
+int litleFormatByte(unsigned char* val, int vlen);
+int litleFormatShort(unsigned short *val, int vlen);
 #ifdef __cplusplus
 }
 #endif

@@ -47,4 +47,31 @@ int mmc_getFreePercent(const char* path) {
     return percent;
 }
 
-
+#if 0
+struct statvfs {
+    unsigned long  f_bsize;    /* Filesystem block size 文件系统块大小 */
+    unsigned long  f_frsize;   /* Fragment size 碎片大小 */
+    fsblkcnt_t     f_blocks;   /* Size of fs in f_frsize units  */
+    fsblkcnt_t     f_bfree;    /* Number of free blocks 空闲块数量 */
+    fsblkcnt_t     f_bavail;   /* Number of free blocks for
+                                             unprivileged users 非特权用户的空闲块数量 */
+    fsfilcnt_t     f_files;    /* Number of inodes i节点数量 */
+    fsfilcnt_t     f_ffree;    /* Number of free inodes 空闲i节点数量 */
+    fsfilcnt_t     f_favail;   /* Number of free inodes for
+                                             unprivileged users 非特权用户的空闲i节点数量 */
+    unsigned long  f_fsid;     /* Filesystem ID 文件系统id */
+    unsigned long  f_flag;     /* Mount flags  挂载标识 */
+    unsigned long  f_namemax;  /* Maximum filename length 最大文件名长度 */
+};
+#endif
+double mmc_getUsagerate(const char* path)
+{
+    struct statvfs sta = {0};
+    if (NULL==path)
+        return -MMCOPTERR_CHECKPARAM;
+    if (statvfs(path, &sta)<0)
+        return -MMCOPTERR_STAVFS;
+    //LOG_I("分区信息：%ld, %ld, %ld, %ld\n", sta.f_bsize, sta.f_frsize, sta.f_bfree, sta.f_blocks);
+    double tmp = 10000*(sta.f_blocks-sta.f_bfree)/sta.f_blocks;
+    return (tmp/100.0);
+}
