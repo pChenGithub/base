@@ -59,8 +59,7 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     int ret = 0;
     // 校验参数
     // 校验token，如果过期，重新获取
-    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET,
-                       outdata, outdatalen);
+    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET);
     if (ret<0)
     {
         return -HTTPERROR_GET_TOKEN;
@@ -147,14 +146,9 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     return ret;
 }
 
-int httpGetToken(const char *url, const char *appid, const char *appsecret,
-                 char *outdata, const int outdatalen)
+int httpGetToken(const char *url, const char *appid, const char *appsecret)
 {
     if(NULL == url || NULL == appid || NULL==appsecret)
-    {
-        return -HTTPERROR_CHECK_PAREM;
-    }
-    if (NULL==outdata||outdatalen<=0)
     {
         return -HTTPERROR_CHECK_PAREM;
     }
@@ -180,8 +174,9 @@ int httpGetToken(const char *url, const char *appid, const char *appsecret,
     reply.opt = http_reply_json;
     // 有返回内容，把缓存指向data，并且指定长度,
     // 这两个参数的检查会在接收数据的时候判断
+    char outdata[512] = {0};
     reply.p = outdata;
-    reply.len = outdatalen;
+    reply.len = sizeof(outdata);
 
     curl = curl_easy_init();
     if(NULL == curl)
@@ -278,8 +273,7 @@ int httpDelEcpDev(const char *url, const char *device_sn, const char *app_secret
     int ret = 0;
     // 校验参数
     // 校验token，如果过期，重新获取
-    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET,
-                       outdata, outdatalen);
+    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET);
     if (ret<0)
     {
         return -HTTPERROR_GET_TOKEN;
@@ -367,8 +361,7 @@ int httpGetproperty(const char *url, const char *product_key, char *outdata, con
     // 校验token，如果过期，重新获取
     char tmpstr[64] = {0};
     snprintf(tmpstr, sizeof(tmpstr), "%s/api/app/token", url);
-    ret = httpGetToken(tmpstr, LOCAL_APP_ID, LOCAL_APP_SECRET,
-                       outdata, outdatalen);
+    ret = httpGetToken(tmpstr, LOCAL_APP_ID, LOCAL_APP_SECRET);
     if (ret<0)
     {
         return -HTTPERROR_GET_TOKEN;
@@ -452,8 +445,7 @@ int httpGetpropertyBysn(const char *url, const char *sn, char *outdata, const in
     int ret = 0;
     // 校验参数
     // 校验token，如果过期，重新获取
-    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET,
-                       outdata, outdatalen);
+    ret = httpGetToken(LOCAL_ECP_APP_HTTP"/api/app/token", LOCAL_APP_ID, LOCAL_APP_SECRET);
     if (ret<0)
     {
         return -HTTPERROR_GET_TOKEN;
@@ -530,4 +522,212 @@ int httpGetpropertyBysn(const char *url, const char *sn, char *outdata, const in
     //curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     return ret;
+}
+
+int httpSetproperty(const char *url, const char *indata,
+                    char *outdata, const int outdatalen)
+{
+    if (NULL==url||NULL==indata||NULL==outdata||outdatalen<=0)
+        return -HTTPERROR_CHECK_PAREM;
+    int ret = 0;
+    // 校验参数
+    // 校验token，如果过期，重新获取
+    char tmpstr[64] = {0};
+    snprintf(tmpstr, sizeof(tmpstr), "%s/api/app/token", url);
+    ret = httpGetToken(tmpstr, LOCAL_APP_ID, LOCAL_APP_SECRET);
+    if (ret<0)
+    {
+        return -HTTPERROR_GET_TOKEN;
+    }
+
+    int lenght = strlen(indata);
+    HTTP_REPLY reply;
+    CURL* curl = NULL;
+    struct curl_slist* headers = NULL;
+    CURLcode res;
+    char* head_pro = tmpstr;
+
+    memset(&reply, 0, sizeof(reply));
+    reply.type = RET_JSON;
+    // 本接口固定返回json
+    reply.opt = http_reply_json;
+    // 有返回内容，把缓存指向data，并且指定长度,
+    // 这两个参数的检查会在接收数据的时候判断
+    reply.p = outdata;
+    reply.len = outdatalen;
+
+    snprintf(head_pro, 64, "Content-Length:%d", lenght);
+    curl = curl_easy_init();
+    if(NULL == curl)
+    {
+        return -HTTPERROR_CURL_INIT;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
+    char reqaddr[512] = {0};
+    snprintf(reqaddr, sizeof(reqaddr), "%s/properties/set?access_token=%s", url,
+             g_dev_meta.workInfo.access_token);
+    //LOG_I("url %s", reqaddr);
+    curl_easy_setopt(curl, CURLOPT_URL, reqaddr);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 2000L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
+
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+    //headers = curl_slist_append(headers, "Content-Type:application/json");
+    //headers = curl_slist_append(headers, head_pro);
+    headers = curl_slist_append(headers, head_pro);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    // body有长度，填入body
+    if(0 != lenght)
+    {
+        LOG_I("httpreq %s", indata);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, indata);
+        //curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(indata));
+    }
+
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &reply);
+
+    // 执行请求,等待回调结束
+    res = curl_easy_perform(curl);
+    if(res != CURLE_OK)
+    {
+        LOG_E("请求错误码 %d", res);
+        if(CURLE_COULDNT_CONNECT == res)
+        {
+            ret = -HTTPERROR_COULDNT_CONNECT;
+        }
+        else if(CURLE_OPERATION_TIMEDOUT == res)
+        {
+            ret = -HTTPERROR_OPERATION_TIMEDOUT;
+        }
+        else
+        {
+            ret = -HTTPERROR_CURL_PERFORM;
+        }
+    }
+    else
+    {
+        ret = reply.ret;
+    }
+
+//curlInitError:
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return ret;
+}
+
+static int httpDoCmd(const char *url, const char* path,
+                     const char *indata, char *outdata, const int outdatalen)
+{
+    if (NULL==url||NULL==path||NULL==indata||NULL==outdata||outdatalen<=0)
+        return -HTTPERROR_CHECK_PAREM;
+    int ret = 0;
+    // 校验参数
+    // 校验token，如果过期，重新获取
+    char tmpstr[64] = {0};
+    snprintf(tmpstr, sizeof(tmpstr), "%s/api/app/token", url);
+    ret = httpGetToken(tmpstr, LOCAL_APP_ID, LOCAL_APP_SECRET);
+    if (ret<0)
+    {
+        return -HTTPERROR_GET_TOKEN;
+    }
+
+    int lenght = strlen(indata);
+    HTTP_REPLY reply;
+    CURL* curl = NULL;
+    struct curl_slist* headers = NULL;
+    CURLcode res;
+    char* head_pro = tmpstr;
+
+    memset(&reply, 0, sizeof(reply));
+    reply.type = RET_JSON;
+    // 本接口固定返回json
+    reply.opt = http_reply_json;
+    // 有返回内容，把缓存指向data，并且指定长度,
+    // 这两个参数的检查会在接收数据的时候判断
+    reply.p = outdata;
+    reply.len = outdatalen;
+
+    snprintf(head_pro, 64, "Content-Length:%d", lenght);
+    curl = curl_easy_init();
+    if(NULL == curl)
+    {
+        return -HTTPERROR_CURL_INIT;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
+    char reqaddr[512] = {0};
+    snprintf(reqaddr, sizeof(reqaddr), "%s%s?access_token=%s", url, path,
+             g_dev_meta.workInfo.access_token);
+    //LOG_I("url %s", reqaddr);
+    curl_easy_setopt(curl, CURLOPT_URL, reqaddr);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 2000L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
+
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+    //headers = curl_slist_append(headers, "Content-Type:application/json");
+    //headers = curl_slist_append(headers, head_pro);
+    headers = curl_slist_append(headers, head_pro);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    // body有长度，填入body
+    if(0 != lenght)
+    {
+        LOG_I("httpreq %s", indata);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, indata);
+        //curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(indata));
+    }
+
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &reply);
+
+    // 执行请求,等待回调结束
+    res = curl_easy_perform(curl);
+    if(res != CURLE_OK)
+    {
+        LOG_E("请求错误码 %d", res);
+        if(CURLE_COULDNT_CONNECT == res)
+        {
+            ret = -HTTPERROR_COULDNT_CONNECT;
+        }
+        else if(CURLE_OPERATION_TIMEDOUT == res)
+        {
+            ret = -HTTPERROR_OPERATION_TIMEDOUT;
+        }
+        else
+        {
+            ret = -HTTPERROR_CURL_PERFORM;
+        }
+    }
+    else
+    {
+        ret = reply.ret;
+    }
+
+//curlInitError:
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return ret;
+}
+
+int httpSetCmd(const char *url, const char *indata, char *outdata, const int outdatalen)
+{
+    return httpDoCmd(url, "/command/device_sn", indata, outdata, outdatalen);
+}
+
+int httpBroadcastCmd(const char *url, const char *indata, char *outdata, const int outdatalen)
+{
+    return httpDoCmd(url, "/command/broadcast", indata, outdata, outdatalen);
 }

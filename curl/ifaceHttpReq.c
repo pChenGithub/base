@@ -113,7 +113,7 @@ static size_t curl_read_cb(void* buffer, size_t size, size_t nitems, void* arg)
 */
 int httpReq(HTTP_REPLY_TYPE type, const char* url, const char* indata, char* outdata, const int outdatalen)
 {
-    return httpReqTimeout(type, url, indata, outdata, outdatalen, 5000L);
+    return httpReqTimeout(type, url, indata, outdata, outdatalen, 10000L);
 }
 // 获取http文件数据
 int httpGetFileReq(HTTP_REPLY_TYPE type, const char* url, const char* indata, char* outdata, const int outdatalen)
