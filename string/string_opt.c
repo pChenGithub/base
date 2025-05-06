@@ -304,3 +304,29 @@ void printLog(const char *file, int line, const char* func, const char* format, 
     va_end(args);
     fflush(stdout);
 }
+
+int litleFormatByte(unsigned char *val, int vlen)
+{
+    if (NULL==val||vlen<=0)
+        return -STROPTERR_CHECKPARAM;
+    int loop = vlen/2;
+    for (int i=0;i<loop;i++) {
+        val[i] = val[i]^val[vlen-1-i];
+        val[vlen-1-i] = val[i] ^ val[vlen-1-i];
+        val[i] = val[i] ^ val[vlen-1-i];
+    }
+    return 0;
+}
+
+int litleFormatShort(unsigned short *val, int vlen)
+{
+    if (NULL==val||vlen<=0)
+        return -STROPTERR_CHECKPARAM;
+    int loop = vlen/2;
+    for (int i=0;i<loop;i++) {
+        val[i] = val[i]^val[vlen-1-i];
+        val[vlen-1-i] = val[i] ^ val[vlen-1-i];
+        val[i] = val[i] ^ val[vlen-1-i];
+    }
+    return 0;
+}

@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/prctl.h>
 
 
 #define NL_THREAD_RUNNING   0x01
@@ -93,6 +94,7 @@ static void* recv_from_netlink(void* arg) {
 */
     struct nlmsghdr* mlmsg = (struct nlmsghdr*)recvbuff;
     sv->flag |= NL_THREAD_RUNNING;
+    prctl(PR_SET_NAME, "recv4netlink");
     while (NL_THREAD_RUNNING&(sv->flag)) {
         //printf("开始等待事件\n");
         memset(recvbuff, 0, NL_RECVBUFF_LEN);
