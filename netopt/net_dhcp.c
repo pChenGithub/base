@@ -37,6 +37,8 @@ static void* run_dhcp(void* arg) {
         int cmdlen = strlen(pcmd->cmdstr);
         snprintf(pcmd->cmdstr+cmdlen, CMDSTR_LEN-cmdlen, " -n -T %d", pcmd->timeouts);
     }
+    // 追加2>&1
+    strcat(pcmd->cmdstr, " 2>&1");
 
     printf("执行的命令 %s\n", pcmd->cmdstr);
 
@@ -94,7 +96,7 @@ int start_dhcp(const char* ifname, int timeouts, hand_dhcpstatus hand) {
     ret = pthread_create(&(pcmd->pid), NULL, run_dhcp, pcmd);
     if (ret<0)
         return -NETERR_PTHREADCREATE_FAIL;      
-    pthread_detach(pcmd->pid);
+    //pthread_detach(pcmd->pid);
     // 标记为脏
     printf("标记为脏\n");
     pcmd->flag |= DIRTY_FLAG;
