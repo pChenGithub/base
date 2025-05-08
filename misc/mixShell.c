@@ -70,6 +70,7 @@ int exeShellWait(const char* cmd, shell_ret_line handret) {
             ret = 0;
             break;
         }
+        // 返回的是 SHELL_RET_IGNORE 就继续往下读取
     }
     // 执行命令成功/失败
     //printf("执行命令结果%d\n", ret);
