@@ -8,10 +8,10 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#define WPA_SUPPLICANT_CONF ""
+#define WPA_SUPPLICANT_CONF PROJECT_DIR_CONFIG"/wpa.conf"   // WIFI 配置文件
 #define WPA_CONNECT_FILE    "/var/run/wpa_supplicant"
-#define WIFI_AP_CONF        PROJECT_DIR_CONFIG"/ap.conf"
-#define UDHCPD_CONF         PROJECT_DIR_CONFIG"/dhcpd.conf"
+#define WIFI_AP_CONF        PROJECT_DIR_CONFIG"/ap.conf"    // ap 配置文件
+#define UDHCPD_CONF         PROJECT_DIR_CONFIG"/dhcpd.conf" // dhcp 配置文件
 //
 #define PROC_IS_EXIST   0   // 进程存在
 //
@@ -28,6 +28,7 @@ static int connect_to_wpa(WIFI_NODE* node, const char* path) {
     int ret = 0;
     if (NULL==node || NULL==path)
         return -NETERR_CHECK_PARAM;
+    //printf("<== %s\n", path);
     node->ctrl_conn = wpa_ctrl_open(path);
     if (NULL==node->ctrl_conn) {
         return -NETERR_WPA_CONNECT_FAIL;
@@ -99,14 +100,47 @@ static int proc_is_run(const char *process) {
 
 // 启动进程
 static int proc_run(const char* cmd) {
+    if (NULL==cmd)
+        return -NETERR_CHECK_PARAM;
     system(cmd);
+    return 0;
+}
+// 关闭进程
+static void proc_kill(const char* name) {
+    if (NULL==name)
+        return ;
+    char cmd[32] = "killall ";
+    strcat(cmd, name);
+    system(cmd);
+}
+
+// 创建最简单的 wpa 配置文件
+static int wpa_conf_simple(const char* file)
+{
+    if (NULL==file)
+        return -NETERR_CHECK_PARAM;
+    // 创建 hostapd 配置文件，如果有文件，覆盖
+    FILE* fp = fopen(WPA_SUPPLICANT_CONF, "w+");
+    if (NULL==fp) {
+        return -NETERR_FOPEN_FAIL;
+    }
+    //
+    fputs("update_config=1\n", fp);
+    fputs("ctrl_interface="WPA_CONNECT_FILE"\n", fp);
+    fputs("country=CN\n", fp);
+    // 关闭文件
+    fflush(fp);
+    fsync(fileno(fp));
+    fclose(fp);
+    fp = NULL;
+    //
     return 0;
 }
 
 int wifi_sta_enable() {
     // 判断是否存在进程
     if (PROC_IS_EXIST==proc_is_run("wpa_supplicant")) {
-        return -NETERR_WPA_IS_RUN;
+        proc_kill("wpa_supplicant");
     }
     // 判断当前是否是ap模式
     if (PROC_IS_EXIST==proc_is_run("hostapd")) {
@@ -117,16 +151,18 @@ int wifi_sta_enable() {
         // 关闭
         system("killall udhcpd");
     }
-    usleep(200000);
     // 检查是否存在 wpa_supplicant 配置文件
     if (0!=file_exist(WPA_SUPPLICANT_CONF)) {
         // 文件不存在，创建一个新的最小的文件
-        return -NETERR_WPA_CONF_NONE;
+        if (wpa_conf_simple(WPA_SUPPLICANT_CONF)<0)
+            return -NETERR_WPA_CONF_NONE;
     }
+    usleep(200000);
     // 启动wpa进程，有可能优化
     proc_run("wpa_supplicant -Dwext -i"WIFI_IFACE_NODE" -c "WPA_SUPPLICANT_CONF" -B");
     // 启动完wpa进程之后，连接wpa通信
-    int ret = connect_to_wpa(&node_wlan0, WPA_CONNECT_FILE);
+    //printf("xxxxxxxxxxxxxxxxx\n");
+    int ret = connect_to_wpa(&node_wlan0, WPA_CONNECT_FILE"/"WIFI_IFACE_NODE);
     if (ret<0) {
         return ret;
     }
@@ -144,6 +180,7 @@ int wifi_sta_disable() {
     // 关闭wpa通信
     disconnect_to_wpa(&node_wlan0);
     // 关闭进程 wpa_supplicant
+    proc_kill("wpa_supplicant");
     return 0;
 }
 
@@ -154,15 +191,35 @@ int wifi_sta_scan()
         return -NETERR_CHECK_PARAM;
     int ret = wpa_ctrl_request(node_wlan0.ctrl_conn, "SCAN", strlen("SCAN"),
                                node_wlan0.reply, &reply_len, NULL);
+    //printf("<==[%s][%d] %s\n", __func__, __LINE__, node_wlan0.reply);
     if (-2==ret) {
         // 超时
+        return -NETERR_CLI_CMD_TIMEOUT;
     } else if (ret<0 || 0==strncmp(node_wlan0.reply, "FAIL", 4)) {
         // 失败
+        return -NETERR_CLI_CMD_ERR;
+    }
+    // 判断返回结果
+    if (0!=strncmp(node_wlan0.reply, "OK", 2)) {
+        // 命令发送没有成功
+        return -NETERR_CLI_CMD_ERR;
     }
 #if 0
     if (strncmp(cmd, "PING", 4) == 0)
         node_wlan0.reply[reply_len] = '\0';
 #endif
+    // 发送 scan 完成
+    // 发送 scan_result
+    ret = wpa_ctrl_request(node_wlan0.ctrl_conn, "SCAN_RESULT", strlen("SCAN_RESULT"),
+                               node_wlan0.reply, &reply_len, NULL);
+    //printf("<==[%s][%d] %s\n", __func__, __LINE__, node_wlan0.reply);
+    if (-2==ret) {
+        // 超时
+        return -NETERR_CLI_CMD_TIMEOUT;
+    } else if (ret<0 || 0==strncmp(node_wlan0.reply, "FAIL", 4)) {
+        // 失败
+        return -NETERR_CLI_CMD_ERR;
+    }
 
     return 0;
 }

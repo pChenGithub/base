@@ -19,7 +19,8 @@ typedef struct {
 
 SHELL_RET_TYPE hand_retstr(const char* linestr) {
     printf("shell结果 %s\n", linestr);
-    if (!strncmp(linestr, "No lease, failing", 17))
+    //if (!strncmp(linestr, "No lease, failing", 17))
+    if (NULL!=strcasestr(linestr, "No lease, failing"))
         return SHELL_RET_ERR;
 #if 0
     else if (!strncmp(linestr, "Sending select for", 18))
@@ -35,7 +36,7 @@ static void* run_dhcp(void* arg) {
     snprintf(pcmd->cmdstr, CMDSTR_LEN, "udhcpc -i %s", pcmd->ifname);
     if (pcmd->timeouts>0) {
         int cmdlen = strlen(pcmd->cmdstr);
-        snprintf(pcmd->cmdstr+cmdlen, CMDSTR_LEN-cmdlen, " -n -T %d", pcmd->timeouts);
+        snprintf(pcmd->cmdstr+cmdlen, CMDSTR_LEN-cmdlen, " -nq -T %d", pcmd->timeouts);
     }
     // 追加2>&1
     strcat(pcmd->cmdstr, " 2>&1");

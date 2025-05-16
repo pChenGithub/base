@@ -54,5 +54,7 @@
 #define NETERR_HOSTAP_NOT_RUN           106 // hostapd进程未运行
 #define NETERR_HOSTAP_CONF_NONE         107 // hostapd没有配置文件
 #define NETERR_UDHCPD_CONF_NONE         108 // udhcpd没有配置文件
+#define NETERR_CLI_CMD_TIMEOUT          109 // wpa_cli发送命令超时
+#define NETERR_CLI_CMD_ERR              110 // wpa_cli发送命令失败
 
 #endif
