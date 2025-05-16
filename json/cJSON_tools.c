@@ -95,8 +95,37 @@ int getfield_float(cJSON *obj, const char *label, float *retval)
         break;
     case cJSON_Number:
         *retval = item->valuedouble;
-        printf("%f", item->valueint);
-        printf("%f", item->valuedouble);
+        //printf("%f", item->valueint);
+        //printf("%f", item->valuedouble);
+        break;
+    default:
+        return -ERR_JSON_DATA_TYPE;
+        break;
+    }
+    return 0;
+}
+
+int getfield_double(cJSON *obj, const char *label, double *retval)
+{
+    float val = 0;
+    int ret = 0;
+    if (NULL==obj||NULL==label||NULL==retval)
+        return -ERR_JSON_CHECKPARAM;
+    // 获取字段
+    cJSON* item = cJSON_GetObjectItem(obj, label);
+    if (NULL==item)
+        return -ERR_JSON_HASNO_FIELD;
+    switch (item->type) {
+    case cJSON_String:
+        val = atof(item->valuestring);
+        if (0==val&&0!=strncmp(item->valuestring, "0", 2))
+            return -ERR_JSON_DATA_NUM;
+        *retval = val;
+        break;
+    case cJSON_Number:
+        *retval = item->valuedouble;
+        //printf("%f", item->valueint);
+        //printf("%f", item->valuedouble);
         break;
     default:
         return -ERR_JSON_DATA_TYPE;
