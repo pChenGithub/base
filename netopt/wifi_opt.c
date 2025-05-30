@@ -1,13 +1,18 @@
 #include "wifi_opt.h"
 #include "net_errno.h"
 #include "file_opt.h"
+#if 0
 #include "global.h"
+#else
+#define PROJECT_DIR_CONFIG "/home/rockchip"
+#endif
 #include "wpas/wpa_ctrl.h"
 #include "net_opt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+
 #define WPA_SUPPLICANT_CONF PROJECT_DIR_CONFIG"/wpa.conf"   // WIFI 配置文件
 #define WPA_CONNECT_FILE    "/var/run/wpa_supplicant"
 #define WIFI_AP_CONF        PROJECT_DIR_CONFIG"/ap.conf"    // ap 配置文件
@@ -28,7 +33,7 @@ static int connect_to_wpa(WIFI_NODE* node, const char* path) {
     int ret = 0;
     if (NULL==node || NULL==path)
         return -NETERR_CHECK_PARAM;
-    //printf("<== %s\n", path);
+    printf("通信接口文件 %s\n", path);
     node->ctrl_conn = wpa_ctrl_open(path);
     if (NULL==node->ctrl_conn) {
         return -NETERR_WPA_CONNECT_FAIL;
@@ -102,6 +107,7 @@ static int proc_is_run(const char *process) {
 static int proc_run(const char* cmd) {
     if (NULL==cmd)
         return -NETERR_CHECK_PARAM;
+    //printf("cmd: %s\n", cmd);
     system(cmd);
     return 0;
 }
@@ -161,7 +167,7 @@ int wifi_sta_enable() {
     // 启动wpa进程，有可能优化
     proc_run("wpa_supplicant -Dwext -i"WIFI_IFACE_NODE" -c "WPA_SUPPLICANT_CONF" -B");
     // 启动完wpa进程之后，连接wpa通信
-    //printf("xxxxxxxxxxxxxxxxx\n");
+    //printf("xxxxxxxxxxxxxxxxx %d\n", __LINE__);
     int ret = connect_to_wpa(&node_wlan0, WPA_CONNECT_FILE"/"WIFI_IFACE_NODE);
     if (ret<0) {
         return ret;
@@ -191,7 +197,7 @@ int wifi_sta_scan()
         return -NETERR_CHECK_PARAM;
     int ret = wpa_ctrl_request(node_wlan0.ctrl_conn, "SCAN", strlen("SCAN"),
                                node_wlan0.reply, &reply_len, NULL);
-    //printf("<==[%s][%d] %s\n", __func__, __LINE__, node_wlan0.reply);
+    printf("<==[%s][%d] 返回内容 %s，长度 %d\n", __func__, __LINE__, node_wlan0.reply, reply_len);
     if (-2==ret) {
         // 超时
         return -NETERR_CLI_CMD_TIMEOUT;
