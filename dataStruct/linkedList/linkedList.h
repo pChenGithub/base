@@ -22,7 +22,7 @@ typedef struct _node{
 
 typedef struct {
     LINK_NODE node;
-    unsigned int nodecount;      // 链表节点数量,不包括head
+    int nodecount;      // 链表节点数量,不包括head
     pthread_mutex_t lock_linked;
 } LINK_HEAD;
 

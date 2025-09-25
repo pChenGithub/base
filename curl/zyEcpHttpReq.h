@@ -32,6 +32,8 @@ int httpSetCmd(const char* url, const char *indata,
 // 广播设备命令
 int httpBroadcastCmd(const char* url, const char *indata,
                      char *outdata, const int outdatalen);
+// 获取场景实例
+int httpGetScenemodeBysn(const char* url, const char* sn, char *outdata, const int outdatalen);
 
 #ifdef __cplusplus
 }

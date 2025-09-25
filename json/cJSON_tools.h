@@ -11,6 +11,8 @@ int getfield_str(cJSON* obj, const char* label, char* buff, unsigned int bufflen
 int getfield_int(cJSON* obj, const char* label, int* retval);
 int getfield_float(cJSON* obj, const char* label, float* retval);
 int getfield_double(cJSON* obj, const char* label, double* retval);
+//
+int getField_arrayInt(cJSON* obj, const char* label, int* array, int size);
 #ifdef __cplusplus
 }
 #endif

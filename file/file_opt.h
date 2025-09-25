@@ -15,6 +15,7 @@ extern "C" {
 #define ERR_FILEOPT_DIR_CREATE  5   // 创建文件夹失败
 #define ERR_FILEOPT_FILE_WRITE  6   // 写文件失败
 #define ERR_FILEOPT_FILE_REMOVE 7   // 删除件失败
+#define ERR_FILEOPT_FILE_RENAME 8   // 重命名文件失败
 
 /** ************************************/
 // 文件读，返回值，错误码，或者读取大小
@@ -29,6 +30,8 @@ int file_remove(const char* file);
 int file_copy(const char* file_src, const char* file_dist);
 // 文件移动
 int file_move(const char* file_src, const char* file_dist);
+// 文件重命名
+int file_rename(const char* file_src, const char* file_dist);
 // 获取文件长度，返回错误码，或者文件大小
 long file_size(const char* file);
 // 文件是否存在,返回错误码，或者0(表示文件存在)

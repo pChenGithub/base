@@ -8,7 +8,7 @@ extern "C" {
 #define MACOPTERR_FOPEN_FAIL        2
 #define MACOPTERR_FREAD_FAIL        3
 #define MACOPTERR_HEXSTR_TOARRAY    4   // 16进制的字符串转数组失败
-#define SYSOPTERR_READ_FILE         5   // 读取文件失败
+//#define SYSOPTERR_READ_FILE         5   // 读取文件失败
 #define SYSOPTERR_GET_SYSINFO       6   // 获取系统信息失败
 #define SYSOPTERR_OPEN_FILE         7   // 打开文件失败
 #define SYSOPTERR_READ_FILE         8   // 读取文件失败

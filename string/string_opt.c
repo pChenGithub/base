@@ -330,3 +330,15 @@ int litleFormatShort(unsigned short *val, int vlen)
     }
     return 0;
 }
+
+int strCopyCArray(char *buff, int len, const char *array, int array_len)
+{
+    if (NULL==buff || len<=0 || NULL==array || array_len<=0)
+        return -STROPTERR_CHECKPARAM;
+
+    array_len = array_len<len?array_len:len-1;
+
+    memcpy(buff, array, array_len);
+    buff[array_len] = 0;
+    return 0;
+}

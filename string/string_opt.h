@@ -32,6 +32,7 @@ int strCopyC(char* buff, int len, const char* str);
     memcpy(buff, str, strlenght); \
     buff[strlenght] = 0; \
 })
+int strCopyCArray(char* buff, int len, const char* array, int array_len);
 //-----------------------------------------------------
 // 数字转字符串,需要指定buff,并会返回这个buff
 char* ll2Str(char* out, int outlen, long long in);

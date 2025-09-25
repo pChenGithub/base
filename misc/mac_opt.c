@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <sys/sysinfo.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <string.h>
 
 //读取mac并转换成sn
 int mac_to_snstr(const char* mac_file, char* buf, int len) {
@@ -92,7 +94,7 @@ double get_mem_Usagerate()
         return -SYSOPTERR_GET_SYSINFO;
     // 计算
     double tmp = 10000*(s_info.totalram - s_info.freeram)/s_info.totalram;
-    //LOG_I("***** %f", tmp);
+    //printf("***** %f\n", tmp);
     return (tmp/100.0);
 }
 

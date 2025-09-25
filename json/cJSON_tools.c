@@ -79,7 +79,7 @@ int getfield_strPoint(cJSON *obj, const char *label, char **pstr)
 int getfield_float(cJSON *obj, const char *label, float *retval)
 {
     float val = 0;
-    int ret = 0;
+    //int ret = 0;
     if (NULL==obj||NULL==label||NULL==retval)
         return -ERR_JSON_CHECKPARAM;
     // 获取字段
@@ -107,8 +107,8 @@ int getfield_float(cJSON *obj, const char *label, float *retval)
 
 int getfield_double(cJSON *obj, const char *label, double *retval)
 {
-    float val = 0;
-    int ret = 0;
+    double val = 0;
+    //int ret = 0;
     if (NULL==obj||NULL==label||NULL==retval)
         return -ERR_JSON_CHECKPARAM;
     // 获取字段
@@ -130,6 +130,43 @@ int getfield_double(cJSON *obj, const char *label, double *retval)
     default:
         return -ERR_JSON_DATA_TYPE;
         break;
+    }
+    return 0;
+}
+
+int getField_arrayInt(cJSON *obj, const char *label, int *array, int size)
+{
+    int ret = 0;
+    if (NULL==obj||NULL==label||NULL==array||size<=0)
+        return -ERR_JSON_CHECKPARAM;
+    // 获取字段
+    cJSON* json_array = cJSON_GetObjectItem(obj, label);
+    if (NULL==json_array)
+        return -ERR_JSON_HASNO_FIELD;
+    if (cJSON_Array!=json_array->type)
+        return -ERR_JSON_DATA_TYPE;
+    int count = cJSON_GetArraySize(json_array);
+    count = count<size?count:size;  // 取小值
+    cJSON* item = NULL;
+    for (int i=0;i<count;i++) {
+        item = cJSON_GetArrayItem(json_array, i);
+        if (NULL==item)
+            return -ERR_JSON_ARRAY_ITEM;
+        // 按数字读取
+        switch (item->type) {
+        case cJSON_String:
+            ret = atoi(item->valuestring);
+            if (0==ret&&0!=strncmp(item->valuestring, "0", 2))
+                return -ERR_JSON_DATA_NUM;
+            array[i] = ret;
+            break;
+        case cJSON_Number:
+            array[i] = item->valueint;
+            break;
+        default:
+            return -ERR_JSON_DATA_TYPE;
+            break;
+        }
     }
     return 0;
 }
