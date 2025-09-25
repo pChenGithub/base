@@ -162,3 +162,19 @@ int dir_remove(const char *dir)
 {
     return file_remove(dir);
 }
+
+int file_move(const char *file_src, const char *file_dist)
+{
+    (void)file_src;
+    (void)file_dist;
+    return 0;
+}
+
+int file_rename(const char *file_src, const char *file_dist)
+{
+    if (NULL==file_src||NULL==file_dist)
+        return -ERR_FILEOPT_CHECKPARAM;
+    if (0!=rename(file_src, file_dist))
+        return -ERR_FILEOPT_FILE_RENAME;
+    return 0;
+}
