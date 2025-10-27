@@ -13,6 +13,8 @@ int getfield_float(cJSON* obj, const char* label, float* retval);
 int getfield_double(cJSON* obj, const char* label, double* retval);
 //
 int getField_arrayInt(cJSON* obj, const char* label, int* array, int size);
+//
+int getField_obj(cJSON* obj, const char* label, cJSON** jret);
 #ifdef __cplusplus
 }
 #endif
