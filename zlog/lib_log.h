@@ -5,7 +5,7 @@ extern "C" {
 #endif
 #include "include/zlog.h"
 #include "devmeta.h"
-#define LIBLOG_ERR_CHECKPARAM   1   // 参数异常
+#include "lib_logErr.h"
 
 #define LOG_I(fomat, args...) ({dzlog_info(fomat, ## args);})
 extern ST_DEV_META g_dev_meta;
