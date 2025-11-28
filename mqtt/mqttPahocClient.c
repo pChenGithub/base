@@ -20,6 +20,8 @@
 static int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
     (void)topicLen;
+    if (NULL==context || NULL==topicName || NULL==message)
+        goto end_push;
     //printf("recv mqtt msg\n");
 #if 0
     printf("Message arrived\n");
@@ -28,9 +30,15 @@ static int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_mes
 #endif
     // 这里调用回调处理消息
     MQClientPahoC *pclient = (MQClientPahoC *)context;
+    size_t len = strlen(topicName);
     // 如果设置了sync topic,判断是否是订阅主题
-    if (NULL==pclient->waitTopic || 0!=memcmp(pclient->waitTopic, topicName, strlen(topicName)+1))
+    if (NULL==pclient->waitTopic)
         goto end_syncpush;
+    if (strlen(pclient->waitTopic)!=len)
+        goto end_syncpush;
+    if (0!=memcmp(pclient->waitTopic, topicName, len+1))
+        goto end_syncpush;
+    //
     if (NULL==pclient->waitData || pclient->waitDataLen<=0)
     {
         pclient->waitRetCode = -MQERR_CHECK_PARAM;
