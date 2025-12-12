@@ -2,6 +2,7 @@
 #include "mongoose.h"
 #include "web_config.h"
 #include <sys/prctl.h>
+#include <string.h>
 
 // web管理实例
 typedef struct
@@ -108,7 +109,12 @@ static void webEventCb(struct mg_connection *c, int ev, void *ev_data, void *fn_
     {
         // http请求
         struct mg_http_message *hm = (struct mg_http_message*)ev_data;
-        //LOG_D("\n\n%s\n\n", hm->method.ptr);
+        //printf("\n\n%s\n\n", hm->method.ptr);
+        if (0==memcmp(hm->method.ptr, "OPTIONS", hm->method.len)) {
+            mg_http_reply(c, 200, "Content-Type:application/json;charset=utf-8\r\n", "");
+            return ;
+        }
+        //printf("\n\n%s\n\n", hm->method.ptr);
         WEB_API_PATH* api = NULL;
         if (0==match_url_path(hm->uri.ptr, userConf->api_path, &api) && NULL!=api)
         {

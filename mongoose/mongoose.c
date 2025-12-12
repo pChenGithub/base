@@ -772,7 +772,8 @@ void mg_http_reply(struct mg_connection *c, int code, const char *headers,
   len = mg_vasprintf(&buf, sizeof(mem), fmt, ap);
   va_end(ap);
   // 我给加了一个头 Access-Control-Allow-Origin: *\n，跨域
-  mg_printf(c, "HTTP/1.1 %d %s\r\nAccess-Control-Allow-Origin: *\n%sContent-Length: %d\r\n\r\n", code,
+  // 再加一个头 Access-Control-Allow-Headers: *\n，跨域
+  mg_printf(c, "HTTP/1.1 %d %s\r\nAccess-Control-Allow-Origin: *\nAccess-Control-Allow-Headers: *\n%sContent-Length: %d\r\n\r\n", code,
             mg_http_status_code_str(code), headers == NULL ? "" : headers, len);
   mg_send(c, buf, len > 0 ? (size_t) len : 0);
   if (buf != mem) free(buf);
