@@ -41,10 +41,11 @@ typedef int (*handleLost)(const char* cause, void* arg);
 typedef int (*handleComplate)(void* arg);
 
 typedef struct {
-    MQTYPE type;
-    handleMessage msgarrive;
-    handleLost connectlost;
-    handleComplate sendcomplate;
+    MQTYPE type;                    // 底层实现类型，枚举
+    // setCallBack
+    handleMessage msgarrive;        // 收消息业务回调（业务层实现接口）
+    handleLost connectlost;         // 远程关闭mqtt连接回调
+    handleComplate sendcomplate;    // 发送结果回调
     void* context;
 } MQClient;
 
@@ -52,6 +53,7 @@ typedef struct {
 int createMqttclient(MQClient **client, const char *addr, const char *clientid, const char *username, const char *passw);
 // 销毁mqtt客户端
 int destroyMqttclient(MQClient* client);
+int destroyMqttclient2NULL(MQClient** client);
 // 设置回调函数
 int setCallBack(MQClient* client, void* context, handleMessage msgarrive,
                 handleLost connectlost, handleComplate sendcomplate);

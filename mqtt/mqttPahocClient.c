@@ -110,7 +110,7 @@ int createMqttclient(MQClient **client, const char *addr, const char *clientid,
     int ret = 0;
     if (NULL == client || NULL==addr || NULL==clientid)
         return -MQERR_CHECK_PARAM;
-    MQClientPahoC *pclient = (MQClientPahoC *)malloc(sizeof(MQClientPahoC));
+    MQClientPahoC *pclient = (MQClientPahoC *)calloc(1, sizeof(MQClientPahoC));
     if (NULL == pclient)
         return -MQERR_MALLOC;
 
@@ -229,6 +229,16 @@ create_fail:
     free(pclient);
     pclient = NULL;
     return ret;
+}
+
+int destroyMqttclient2NULL(MQClient **client) {
+    if (NULL == client || NULL==(*client))
+        return -MQERR_CHECK_PARAM;
+    int ret = destroyMqttclient(*client);
+    if (ret<0)
+        return ret;
+    *client = NULL;
+    return 0;
 }
 
 int destroyMqttclient(MQClient* client) {

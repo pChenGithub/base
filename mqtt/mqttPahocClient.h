@@ -26,7 +26,7 @@ typedef struct {
     MQTTClient_connectOptions conn_opts;
     MQTTClient_message pubmsg;
     MQTTClient_deliveryToken token;
-    pthread_mutex_t lockmsg;
+    pthread_mutex_t lockmsg;                // 锁定消息发送接口
     // 改造同步方式使用的信号量
     sem_t waitRspTopic;
     // 同步通信监听的topic
