@@ -9,5 +9,7 @@
 #define ERR_JSON_DATA_NUM       4   // 数据数字格式检查异常
 #define ERR_JSON_BUFF_LEN       5   // 给的buff长度不足
 #define ERR_JSON_ARRAY_ITEM     6   // 数组元素检查异常
+#define ERR_JSON_PASER2STRING   7   // JSON转成字符串失败
+#define ERR_JSON_BUFF_ENOUGH    8   // JSON转成字符串提供缓存空间不足
 #endif
 

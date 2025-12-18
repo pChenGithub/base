@@ -181,3 +181,46 @@ int getField_obj(cJSON *obj, const char *label, cJSON **jret)
         return -ERR_JSON_HASNO_FIELD;
     return 0;
 }
+
+int json2string(cJSON *root, char *buff, int len)
+{
+    if (NULL==root||NULL==buff||len<=0)
+        return -ERR_JSON_CHECKPARAM;
+    char* pstr = cJSON_PrintUnformatted(root);
+    if (NULL==pstr)
+        return -ERR_JSON_PASER2STRING;
+    // 判断长度
+    int strlenght = strlen(pstr);
+    if (len<(strlenght+1)) {
+        free(pstr);pstr = NULL;
+        return -ERR_JSON_BUFF_ENOUGH;
+    }
+    memcpy(buff, pstr, strlenght);
+    buff[strlenght] = 0;
+    free(pstr);pstr = NULL;
+    return 0;
+}
+
+int json2string_free(cJSON **root, char *buff, int len)
+{
+    if (NULL==root||NULL==buff||len<=0)
+        return -ERR_JSON_CHECKPARAM;
+    if (NULL==(*root))
+        return -ERR_JSON_CHECKPARAM;
+    char* pstr = cJSON_PrintUnformatted(*root);
+    // 释放json
+    cJSON_Delete(*root);*root = NULL;
+    if (NULL==pstr)
+        return -ERR_JSON_PASER2STRING;
+    // 判断长度
+    int strlenght = strlen(pstr);
+    if (len<(strlenght+1)) {
+        free(pstr);pstr = NULL;
+        return -ERR_JSON_BUFF_ENOUGH;
+    }
+    //
+    memcpy(buff, pstr, strlenght);
+    buff[strlenght] = 0;
+    free(pstr);pstr = NULL;
+    return 0;
+}
