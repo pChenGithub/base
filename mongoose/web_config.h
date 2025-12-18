@@ -4,6 +4,7 @@
 extern "C" {
 #endif
 #include "../json/cJSON.h"
+#include "cJSON_tools.h"
 #include "mongoose.h"
 // 数组结束符
 #define WEB_API_PATH_EOF    -1
@@ -18,11 +19,13 @@ typedef struct
     struct mg_http_message* hm;
 } LINK_FILE_ARG;
 // 类型
+#define HTTP_CODE_FILED "httpCode"  // http返回code的json字段名称
 typedef enum
 {
     TYPE_REQ_POST = 0,  // 默认是post请求json，返回json
     TYPE_REQ_POST_FILE, // post方式上传文件
     TYPE_REQ_LINK_FILE, // 链接方式下载文件
+    TYPE_REQ_POST_CODE, // post请求json，返回json，带回http code
 } HTTP_REQ_TYPE;
 // aip配置
 typedef struct _api_path

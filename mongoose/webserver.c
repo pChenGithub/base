@@ -118,6 +118,7 @@ static void webEventCb(struct mg_connection *c, int ev, void *ev_data, void *fn_
         WEB_API_PATH* api = NULL;
         if (0==match_url_path(hm->uri.ptr, userConf->api_path, &api) && NULL!=api)
         {
+            int httpCode = 200; // 默认正常
             // 创建回复消息
             cJSON* root = NULL;
             // 执行回调
@@ -133,6 +134,18 @@ static void webEventCb(struct mg_connection *c, int ev, void *ev_data, void *fn_
                         return ;
                     }
                     api->func_hand(root, hm->body.ptr, &wApp->http_send_ok);
+                    break;
+                case TYPE_REQ_POST_CODE:
+                    root = cJSON_CreateObject();
+                    if (NULL==root)
+                    {
+                        printf("创建json失败");
+                        return ;
+                    }
+                    api->func_hand(root, hm->body.ptr, &wApp->http_send_ok);
+                    // 检查 root中的固定字段 httpCode，是一个int型数字
+                    // 不检查成功情况，失败了就是默认值 200
+                    getfield_int(root, HTTP_CODE_FILED, &httpCode);
                     break;
                 case TYPE_REQ_POST_FILE:
                     root = cJSON_CreateObject();
@@ -161,7 +174,7 @@ static void webEventCb(struct mg_connection *c, int ev, void *ev_data, void *fn_
             char* jsonstr = cJSON_PrintUnformatted(root);
             //LOG_D("repy http %s\n", jsonstr);
             // 回复
-            mg_http_reply(c, 200, "Content-Type:application/json;charset=utf-8\r\n", jsonstr);
+            mg_http_reply(c, httpCode, "Content-Type:application/json;charset=utf-8\r\n", jsonstr);
             free(jsonstr);
             jsonstr = NULL;
             //
