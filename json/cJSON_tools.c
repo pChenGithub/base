@@ -143,13 +143,32 @@ int getField_arrayInt(cJSON *obj, const char *label, int *array, int size)
     cJSON* json_array = cJSON_GetObjectItem(obj, label);
     if (NULL==json_array)
         return -ERR_JSON_HASNO_FIELD;
-    if (cJSON_Array!=json_array->type)
+    return getField_arrayInt2(json_array, array, size);
+}
+
+int getField_obj(cJSON *obj, const char *label, cJSON **jret)
+{
+    if (NULL==obj||NULL==label||NULL==jret)
+        return -ERR_JSON_CHECKPARAM;
+    // 获取字段
+    *jret = cJSON_GetObjectItem(obj, label);
+    if (NULL==(*jret))
+        return -ERR_JSON_HASNO_FIELD;
+    return 0;
+}
+
+int getField_arrayInt2(cJSON *objarray, int *array, int size)
+{
+    int ret = 0;
+    if (NULL==objarray||NULL==array||size<=0)
+        return -ERR_JSON_CHECKPARAM;
+    if (cJSON_Array!=objarray->type)
         return -ERR_JSON_DATA_TYPE;
-    int count = cJSON_GetArraySize(json_array);
+    int count = cJSON_GetArraySize(objarray);
     count = count<size?count:size;  // 取小值
     cJSON* item = NULL;
     for (int i=0;i<count;i++) {
-        item = cJSON_GetArrayItem(json_array, i);
+        item = cJSON_GetArrayItem(objarray, i);
         if (NULL==item)
             return -ERR_JSON_ARRAY_ITEM;
         // 按数字读取

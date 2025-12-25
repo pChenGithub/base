@@ -13,6 +13,7 @@ int getfield_float(cJSON* obj, const char* label, float* retval);
 int getfield_double(cJSON* obj, const char* label, double* retval);
 //
 int getField_arrayInt(cJSON* obj, const char* label, int* array, int size);
+int getField_arrayInt2(cJSON* objarray, int* array, int size);
 //
 int getField_obj(cJSON* obj, const char* label, cJSON** jret);
 // json转字符串
