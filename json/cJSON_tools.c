@@ -146,17 +146,6 @@ int getField_arrayInt(cJSON *obj, const char *label, int *array, int size)
     return getField_arrayInt2(json_array, array, size);
 }
 
-int getField_obj(cJSON *obj, const char *label, cJSON **jret)
-{
-    if (NULL==obj||NULL==label||NULL==jret)
-        return -ERR_JSON_CHECKPARAM;
-    // 获取字段
-    *jret = cJSON_GetObjectItem(obj, label);
-    if (NULL==(*jret))
-        return -ERR_JSON_HASNO_FIELD;
-    return 0;
-}
-
 int getField_arrayInt2(cJSON *objarray, int *array, int size)
 {
     int ret = 0;

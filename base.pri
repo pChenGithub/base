@@ -75,4 +75,14 @@ HEADERS += $$PWD/zlog/lib_log.h
 INCLUDEPATH += $$PWD/zlog
 unix:!macx: LIBS += -L$$PWD/zlog/lib -lzlog
 }
+# net opt
+contains (DEFINES, M_NET) {
+SOURCES += $$PWD/netopt/net_opt.c \
+    $$PWD/netopt/net_dhcp.c \
+    $$PWD/netopt/net_netlink.c
+HEADERS += $$PWD/netopt/net_opt.h \
+    $$PWD/netopt/net_dhcp.h \
+    $$PWD/netopt/net_netlink.h
+INCLUDEPATH += $$PWD/netopt
+}
 
