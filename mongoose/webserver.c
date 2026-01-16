@@ -21,7 +21,7 @@ static int web_code_msg(cJSON* rsp, int code, const char* msg)
 {
     if (NULL==rsp)
     {
-        printf("参数异常");
+        printf("参数异常 %d\n", __LINE__);
         return -1;
     }
     // 拼接回复消息
@@ -68,7 +68,7 @@ static int match_url_path(const char* full_path, WEB_API_PATH* apis, WEB_API_PAT
     int path_len = 0;
     if (NULL==full_path || NULL==apis || NULL==api)
     {
-        printf("参数异常");
+        printf("参数异常 %d\n", __LINE__);
         return -1;
     }
     WEB_API_PATH* path = apis;

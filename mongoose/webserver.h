@@ -16,7 +16,7 @@ typedef struct {
     const char* rootDir;    // web根目录
     WEB_API_PATH* api_path; // web服务监听的路径集合
     //
-    void* webApp;           // web实例，无需用户设置
+    void* webApp;           // web实例，无需用户设置，但是必须初始化为 NULL
 } WEB_USER_CONF;
 //
 int webAppStart(WEB_USER_CONF* conf);
