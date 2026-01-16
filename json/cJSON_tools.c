@@ -136,7 +136,6 @@ int getfield_double(cJSON *obj, const char *label, double *retval)
 
 int getField_arrayInt(cJSON *obj, const char *label, int *array, int size)
 {
-    int ret = 0;
     if (NULL==obj||NULL==label||NULL==array||size<=0)
         return -ERR_JSON_CHECKPARAM;
     // 获取字段
@@ -230,5 +229,32 @@ int json2string_free(cJSON **root, char *buff, int len)
     memcpy(buff, pstr, strlenght);
     buff[strlenght] = 0;
     free(pstr);pstr = NULL;
+    return 0;
+}
+
+int string2json(const char *buff, cJSON **retJson)
+{
+    if (NULL==buff||NULL==retJson)
+        return -ERR_JSON_CHECKPARAM;
+    cJSON* root = cJSON_Parse(buff);
+    if (NULL==root)
+        return -ERR_JSON_PASER_FROM_STR;
+    *retJson = root;
+    return 0;
+}
+
+int string2jsonArray(const char *buff, cJSON **retJson)
+{
+    if (NULL==buff||NULL==retJson)
+        return -ERR_JSON_CHECKPARAM;
+    cJSON* root = cJSON_Parse(buff);
+    if (NULL==root)
+        return -ERR_JSON_PASER_FROM_STR;
+    // 希望json是数组
+    if (cJSON_Array!=root->type) {
+        cJSON_Delete(root);
+        return -ERR_JSON_STR_TYPE;
+    }
+    *retJson = root;
     return 0;
 }

@@ -11,5 +11,7 @@
 #define ERR_JSON_ARRAY_ITEM     6   // 数组元素检查异常
 #define ERR_JSON_PASER2STRING   7   // JSON转成字符串失败
 #define ERR_JSON_BUFF_ENOUGH    8   // JSON转成字符串提供缓存空间不足
+#define ERR_JSON_PASER_FROM_STR 9   // 字符串转成JSON失败
+#define ERR_JSON_STR_TYPE       10  // 转成JSON的字符串，不是期待的JSON类型
 #endif
 
