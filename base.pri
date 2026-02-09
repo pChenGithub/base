@@ -71,7 +71,9 @@ unix:!macx: LIBS += -L$$PWD/openssl/buid_aarch64/lib -lssl -lcrypto
 # log
 contains (DEFINES, M_LOG) {
 SOURCES += $$PWD/zlog/lib_log.c
+SOURCES += $$PWD/zlog/lib_logTool.c
 HEADERS += $$PWD/zlog/lib_log.h
+HEADERS += $$PWD/zlog/lib_logTool.h
 INCLUDEPATH += $$PWD/zlog
 unix:!macx: LIBS += -L$$PWD/zlog/lib -lzlog
 }
@@ -84,5 +86,12 @@ HEADERS += $$PWD/netopt/net_opt.h \
     $$PWD/netopt/net_dhcp.h \
     $$PWD/netopt/net_netlink.h
 INCLUDEPATH += $$PWD/netopt
+}
+# mmc
+# net opt
+contains (DEFINES, M_MMC) {
+SOURCES += $$PWD/misc/mmc_opt.c
+HEADERS += $$PWD/misc/mmc_opt.h
+INCLUDEPATH *= $$PWD/misc
 }
 

@@ -21,12 +21,17 @@ static int filter_dir(const struct dirent *entry) {
     return 1;
 }
 // 删除指定目录早期的5个日志文件
-static int delPre5Logs(const char* logDir) {
+// file 返回删除的最后一个文件名，可以为 NULL
+#define LIB_LOG_DEL_MAX 5   // 最大删除文件个数
+#define LIB_LOG_RETAIN  2   // 要求保留文件个数
+static int delPre5Logs(const char* logDir, char* filename, int len) {
     // /zyckdata/zyck_scb_adapterEAi/log/2025-11-21.txt
     char fullPath[64] = {0};
     int ret = 0;
     if (NULL==logDir)
         return -LIBLOG_ERR_CHECKPARAM;
+    char* retname = NULL;
+    int delcount = LIB_LOG_DEL_MAX;     // 默认删除5个文件
     // 按时间，名称获取文件列表，并且去除目录
     struct dirent** namelist = NULL;
     int count = scandir(logDir, &namelist, filter_dir, alphasort);
@@ -37,23 +42,24 @@ static int delPre5Logs(const char* logDir) {
         ret = -LIBLOG_ERR_HASNO_FILE;
         goto free_namelist;
     }
+    // 文件不足2个，无需删除，保留
+    if (count<=LIB_LOG_RETAIN)
+        goto free_namelist;
+    if (count<(LIB_LOG_DEL_MAX+LIB_LOG_RETAIN))
+        delcount = count-LIB_LOG_RETAIN;
 #if 1
     // 升序
-    for (int i=0;i<count;i++) {
+    for (int i=0;i<delcount;i++) {
         LOG_I("文件名称：%s", namelist[i]->d_name);
-        // 小于5个，且没有失败，执行删除文件，
-        // 无论如何保留2个文件
-        if (i<5 && i<(count-2) && 0==ret) {
-            char* name = namelist[i]->d_name;
-            snprintf(fullPath, sizeof(fullPath), "%s/%s", logDir, name);
-            LOG_I("超大小删除文件 %s", fullPath);
-            #if 1
-            ret = file_remove(fullPath);
-            if (ret<0) 
-                ret = -LIBLOG_ERR_REMOVE_FILE;
-            #endif
+        snprintf(fullPath, sizeof(fullPath), "%s/%s", logDir, namelist[i]->d_name);
+        LOG_I("超大小删除文件 %s", fullPath);
+        ret = file_remove(fullPath);
+        if (ret<0) {
+            // 删除文件失败，终止
+            ret = -LIBLOG_ERR_REMOVE_FILE;
+            break;
         }
-        free(namelist[i]);  // 清理内存
+        retname = namelist[i]->d_name;  // 记录最新删除成功的文件名称
     }
 #else
     // 降序
@@ -62,34 +68,19 @@ static int delPre5Logs(const char* logDir) {
         LOG_I("文件名称：%s", namelist[n]->d_name);
     }
 #endif
+    // 返回最后删除的文件名称
+    if (NULL!=filename && len>0 && NULL!=retname)
+        strCopyC(filename, len, retname);
 
 free_namelist:
-    free(namelist);
+    for (int i=0;i<count;i++)
+        free(namelist[i]);  // 清理内存
+    free(namelist);         // 清理内存
     return ret;
 }
 // percent 为20% 的 20
 int delBigLogs(const char* logDir, int percent) {
-    int ret = 0;
-    if (NULL==logDir || percent<=0 || percent>100)
-        return -LIBLOG_ERR_CHECKPARAM;
-    // 检查存储空间
-    int percent_free = mmc_getFreePercent(logDir);
-    if(-1 == percent_free) 
-        return -LIBLOG_ERR_GET_FREEPERCENT;
-    if (percent_free > percent)
-        return 0;
-    // 循环检查最多检查10次
-    char count = 10;
-    LOG_I("空闲空间 %d", percent_free);
-    //while((count--) && percent_free < percent) {
-    while((count--) && 1) {
-        // 控件超过设定值，考虑删除日志文件，直至回到阈值以下
-        ret = delPre5Logs(logDir);
-        if (ret<0)
-            return ret;
-        percent_free = mmc_getFreePercent(logDir);
-    }
-    return 0;
+    return delBigFile(logDir, percent, NULL, 0);
 }
 
 // overTime 为过期时间，单位是 秒
@@ -114,8 +105,7 @@ int delOverdueLogs(const char* logDir, int overTime) {
         // 目录文件无需处理
         if (DT_DIR==pfile->d_type)
             continue ;
-        char* name = pfile->d_name;
-        snprintf(fullPath, sizeof(fullPath), "%s/%s", logDir, name);
+        snprintf(fullPath, sizeof(fullPath), "%s/%s", logDir, pfile->d_name);
         /**
             struct stat {
             mode_t st_mode; // 文件类型和权限
@@ -137,8 +127,8 @@ int delOverdueLogs(const char* logDir, int overTime) {
             ret = -LIBLOG_ERR_STAT_FILE;
             goto close_exit;
         }
-        LOG_I("文件名称：%s", pfile->d_name);
-        LOG_I("文件修改时间 %ld", sb.st_mtime);
+        //LOG_I("文件名称：%s", pfile->d_name);
+        //LOG_I("文件修改时间 %ld", sb.st_mtime);
         if (sb.st_mtime<ct) {
             LOG_I("超时间删除文件 %s", fullPath);
             if (file_remove(fullPath)<0)  {
@@ -151,4 +141,29 @@ int delOverdueLogs(const char* logDir, int overTime) {
 close_exit:
     closedir(pdir);
     return ret;
+}
+
+
+int delBigFile(const char *logDir, int percent, char *filename, int filenameLen) {
+    int ret = 0;
+    if (NULL==logDir || percent<=0 || percent>100)
+        return -LIBLOG_ERR_CHECKPARAM;
+    // 检查存储空间
+    int percent_free = mmc_getFreePercent(logDir);
+    if(-1 == percent_free)
+        return -LIBLOG_ERR_GET_FREEPERCENT;
+    if (percent_free > percent)
+        return 0;
+    // 循环检查最多检查10次
+    char count = 10;
+    LOG_I("空闲空间 %d", percent_free);
+    //while((count--) && percent_free < percent) {
+    while((count--) && 1) {
+        // 控件超过设定值，考虑删除日志文件，直至回到阈值以下
+        ret = delPre5Logs(logDir, filename, filenameLen);
+        if (ret<0)
+            return ret;
+        //percent_free = mmc_getFreePercent(logDir);
+    }
+    return 0;
 }
