@@ -64,7 +64,7 @@ INCLUDEPATH += $$PWD/timeopt
 contains (DEFINES, M_HTTPC) {
 SOURCES += $$PWD/curl/ifaceHttpReq.c
 HEADERS += $$PWD/curl/ifaceHttpReq.h
-INCLUDEPATH += $$PWD/curl
+INCLUDEPATH += $$PWD/curl $$PWD/curl/include
 unix:!macx: LIBS += -L$$PWD/curl/lib -lcurl
 unix:!macx: LIBS += -L$$PWD/openssl/buid_aarch64/lib -lssl -lcrypto
 }
