@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <pthread.h>
+#include <errno.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #define WPA_SUPPLICANT_CONF PROJECT_DIR_CONFIG"/wpa.conf"   // WIFI 配置文件
 #define WPA_CONNECT_FILE    "/var/run/wpa_supplicant"
@@ -21,13 +26,88 @@
 #define PROC_IS_EXIST   0   // 进程存在
 //
 #define WIFI_IFACE_NODE "wlan0" // WIFI 节点
+//
+typedef enum {
+    WIFI_EVT_CONNECTING = 0,        // wifi连接中
+    WIFI_EVT_CONNECTED,                 // wifi连接成功
+    WIFI_EVT_DISCONNECTED,          // wifi连接断开
+    WIFI_EVT_PASSWORD_ERROR,    // 密码错误
+    WIFI_EVT_SCAN_COMPLETED,    // 扫描成功
+    WIFI_EVT_SCAN_FAILED,               // 扫描失败
+} WIFI_EVT_TYPE;
+typedef int (*WIFI_EV_HANDLE)(WIFI_EVT_TYPE ev, void* arg);
 typedef struct {
     struct wpa_ctrl* ctrl_conn;     // 命令接口
-    struct wpa_ctrl* monitor_conn;  // 监听接口
     char reply[4096];               // 回复消息
+    struct wpa_ctrl* monitor_conn;  // 监听接口
+    pthread_t monitor_thread;           // 监听线程
+    WIFI_EV_HANDLE func;            // 
 } WIFI_NODE; // 单个wifi节点
 static WIFI_NODE node_wlan0;
-//
+// 统一使用 ctrl_conn 来发送命令，考虑加锁
+static int wpa_cmd(WIFI_NODE* node, const char *cmd) {
+    int ret = 0;
+    if (NULL==node)
+        return -NETERR_CHECK_PARAM;
+    if (NULL==node->ctrl_conn)
+        return -NETERR_WPA_NO_CTRL;
+    size_t len = sizeof(node->reply);
+    ret = wpa_ctrl_request(node->ctrl_conn, cmd, strlen(cmd), node->reply, &len, NULL);
+    if (-2==ret)
+        return -NETERR_CLI_CMD_TIMEOUT;
+    if (ret<0 || 0==strncmp(node->reply, "FAIL", 4))
+        return -NETERR_CLI_CMD_ERR;
+
+    // 处理回复消息
+    return 0;
+}
+// 解析wifi扫描结果
+static int parse_scan_result(WIFI_NODE* node) {
+    int ret = wpa_cmd(node, "SCAN_RESULTS");
+    if (ret<0)
+        return ret;
+    // 返回内容在 node->reply 中
+    node->func(WIFI_EVT_SCAN_COMPLETED, NULL);
+    return 0;
+}
+// 处理wifi消息线程
+static void* wifi_monitor_thread(void* arg) {
+    char buf[2048] = {0};
+    // arg 必不为NULL
+    int ret = 0;
+    WIFI_NODE* node = (WIFI_NODE*)arg;
+    int fd = wpa_ctrl_get_fd(node->monitor_conn);
+    while (1) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        ret = select(fd + 1, &rfds, NULL, NULL, NULL);
+        if (ret<0) {
+            // 错误，退出线程
+            printf("select error: %s\n", strerror(errno));
+            break;
+        }
+        // 不是fd可读，返回
+        if (!FD_ISSET(fd, &rfds)) continue;
+        // 读取消息
+        size_t len  = sizeof(buf);
+        if (wpa_ctrl_recv(node->monitor_conn, buf, &len) < 0)
+            continue;
+
+        // 事件处理，调用回调...
+        if (strstr(buf, "SCAN_COMPLETED"))
+            parse_scan_result(node);    // 解析扫描结果
+        else if (strstr(buf, "CONNECTING"))
+            node->func(WIFI_EVT_CONNECTING, NULL);
+        else if (strstr(buf, "CONNECTED"))
+            node->func(WIFI_EVT_CONNECTED, NULL);
+        else if (strstr(buf, "DISCONNECTED"))
+            node->func(WIFI_EVT_DISCONNECTED, NULL);
+        else if (strstr(buf, "AUTH_FAILED"))
+            node->func(WIFI_EVT_PASSWORD_ERROR, NULL);
+    }
+    return NULL;
+}
 // 建立和wpa的通信
 static int connect_to_wpa(WIFI_NODE* node, const char* path) {
     int ret = 0;
@@ -49,10 +129,17 @@ static int connect_to_wpa(WIFI_NODE* node, const char* path) {
         ret = -NETERR_WPA_ATTACH_FAIL;
         goto monitor_close;
     }
+    // 创建线程监听wifi状态
+    if (0 != pthread_create(&node->monitor_thread, NULL, wifi_monitor_thread, node)) {
+        ret = -NETERR_PTHREADCREATE_FAIL;
+        goto monitor_detach;
+    }
 
     // 正确返回
     return 0;
 
+monitor_detach:
+    wpa_ctrl_detach(node->monitor_conn);
 monitor_close:
     wpa_ctrl_close(node->monitor_conn);
     node->monitor_conn= NULL;
@@ -66,6 +153,10 @@ ctrl_close:
 static int disconnect_to_wpa(WIFI_NODE* node) {
     if (NULL==node)
         return -NETERR_CHECK_PARAM;
+    // 取消线程
+    pthread_cancel(node->monitor_thread);
+    // 等待线程
+    pthread_join(node->monitor_thread, NULL);
     wpa_ctrl_detach(node->monitor_conn);
     wpa_ctrl_close(node->monitor_conn);
     wpa_ctrl_close(node->ctrl_conn);

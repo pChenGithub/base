@@ -56,5 +56,6 @@
 #define NETERR_UDHCPD_CONF_NONE         108 // udhcpd没有配置文件
 #define NETERR_CLI_CMD_TIMEOUT          109 // wpa_cli发送命令超时
 #define NETERR_CLI_CMD_ERR              110 // wpa_cli发送命令失败
+#define NETERR_WPA_NO_CTRL              111 // 没有控制接口
 
 #endif
