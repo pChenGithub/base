@@ -14,8 +14,9 @@ int wifi_sta_enable();
 int wifi_sta_disable();
 // 扫描wifi
 int wifi_sta_scan();
+int wifi_sta_scan_result();
 // 连接wifi
-int wifi_sta_connect();
+int wifi_sta_connect(const char* ssid, const char* passw);
 
 /** wifi access point 模式 *************/
 typedef struct {

@@ -4,7 +4,7 @@
 #if 0
 #include "global.h"
 #else
-#define PROJECT_DIR_CONFIG "/home/rockchip"
+#define PROJECT_DIR_CONFIG "/home"
 #endif
 #include "wpas/wpa_ctrl.h"
 #include "net_opt.h"
@@ -52,6 +52,7 @@ static int wpa_cmd(WIFI_NODE* node, const char *cmd) {
     if (NULL==node->ctrl_conn)
         return -NETERR_WPA_NO_CTRL;
     size_t len = sizeof(node->reply);
+    memset(node->reply, 0, len);
     ret = wpa_ctrl_request(node->ctrl_conn, cmd, strlen(cmd), node->reply, &len, NULL);
     if (-2==ret)
         return -NETERR_CLI_CMD_TIMEOUT;
@@ -59,6 +60,7 @@ static int wpa_cmd(WIFI_NODE* node, const char *cmd) {
         return -NETERR_CLI_CMD_ERR;
 
     // 处理回复消息
+    printf("命令 %s，回复 %s\n", cmd, node->reply);
     return 0;
 }
 // 解析wifi扫描结果
@@ -67,7 +69,8 @@ static int parse_scan_result(WIFI_NODE* node) {
     if (ret<0)
         return ret;
     // 返回内容在 node->reply 中
-    node->func(WIFI_EVT_SCAN_COMPLETED, NULL);
+    if (node->func)
+        node->func(WIFI_EVT_SCAN_COMPLETED, NULL);
     return 0;
 }
 // 处理wifi消息线程
@@ -77,10 +80,9 @@ static void* wifi_monitor_thread(void* arg) {
     int ret = 0;
     WIFI_NODE* node = (WIFI_NODE*)arg;
     int fd = wpa_ctrl_get_fd(node->monitor_conn);
+    printf("启动线程监听wifi事件\n");
     while (1) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(fd, &rfds);
+        fd_set rfds;FD_ZERO(&rfds);FD_SET(fd, &rfds);
         ret = select(fd + 1, &rfds, NULL, NULL, NULL);
         if (ret<0) {
             // 错误，退出线程
@@ -89,22 +91,33 @@ static void* wifi_monitor_thread(void* arg) {
         }
         // 不是fd可读，返回
         if (!FD_ISSET(fd, &rfds)) continue;
+
         // 读取消息
         size_t len  = sizeof(buf);
         if (wpa_ctrl_recv(node->monitor_conn, buf, &len) < 0)
             continue;
 
+        printf("收到事件，%s\n", buf);
         // 事件处理，调用回调...
-        if (strstr(buf, "SCAN_COMPLETED"))
+        WIFI_EVT_TYPE ev;
+        if (strstr(buf, "SCAN-RESULTS")) {
             parse_scan_result(node);    // 解析扫描结果
-        else if (strstr(buf, "CONNECTING"))
-            node->func(WIFI_EVT_CONNECTING, NULL);
-        else if (strstr(buf, "CONNECTED"))
-            node->func(WIFI_EVT_CONNECTED, NULL);
-        else if (strstr(buf, "DISCONNECTED"))
-            node->func(WIFI_EVT_DISCONNECTED, NULL);
-        else if (strstr(buf, "AUTH_FAILED"))
-            node->func(WIFI_EVT_PASSWORD_ERROR, NULL);
+            continue;
+        } else if (strstr(buf, "CONNECTING")) {
+            printf("wifi连接中...\n");
+            ev = WIFI_EVT_CONNECTING;
+        } else if (strstr(buf, "CONNECTED")) {
+            printf("wifi连接成功\n");
+            ev = WIFI_EVT_CONNECTED;
+        } else if (strstr(buf, "DISCONNECTED")) {
+            printf("wifi连接断开\n");
+            ev = WIFI_EVT_DISCONNECTED;
+        } else if (strstr(buf, "AUTH_FAILED")) {
+            printf("wifi连接失败，密码错误\n");
+            ev = WIFI_EVT_PASSWORD_ERROR;
+        }
+        if (node->func)
+            node->func(ev, NULL);
     }
     return NULL;
 }
@@ -130,6 +143,7 @@ static int connect_to_wpa(WIFI_NODE* node, const char* path) {
         goto monitor_close;
     }
     // 创建线程监听wifi状态
+    printf("创建线程，监听wifi状态\n");
     if (0 != pthread_create(&node->monitor_thread, NULL, wifi_monitor_thread, node)) {
         ret = -NETERR_PTHREADCREATE_FAIL;
         goto monitor_detach;
@@ -248,6 +262,8 @@ int wifi_sta_enable() {
         // 关闭
         system("killall udhcpd");
     }
+    // 清理接口文件
+    file_remove(WPA_CONNECT_FILE"/"WIFI_IFACE_NODE);
     // 检查是否存在 wpa_supplicant 配置文件
     if (0!=file_exist(WPA_SUPPLICANT_CONF)) {
         // 文件不存在，创建一个新的最小的文件
@@ -256,7 +272,7 @@ int wifi_sta_enable() {
     }
     usleep(200000);
     // 启动wpa进程，有可能优化
-    proc_run("wpa_supplicant -Dwext -i"WIFI_IFACE_NODE" -c "WPA_SUPPLICANT_CONF" -B");
+    proc_run("/home/wifi/wpa_supplicant -Dnl80211 -i"WIFI_IFACE_NODE" -c "WPA_SUPPLICANT_CONF" -B");
     // 启动完wpa进程之后，连接wpa通信
     //printf("xxxxxxxxxxxxxxxxx %d\n", __LINE__);
     int ret = connect_to_wpa(&node_wlan0, WPA_CONNECT_FILE"/"WIFI_IFACE_NODE);
@@ -283,41 +299,33 @@ int wifi_sta_disable() {
 
 int wifi_sta_scan()
 {
-    size_t reply_len = 0;
     if (NULL==node_wlan0.ctrl_conn)
         return -NETERR_CHECK_PARAM;
-    int ret = wpa_ctrl_request(node_wlan0.ctrl_conn, "SCAN", strlen("SCAN"),
-                               node_wlan0.reply, &reply_len, NULL);
-    printf("<==[%s][%d] 返回内容 %s，长度 %d\n", __func__, __LINE__, node_wlan0.reply, reply_len);
-    if (-2==ret) {
-        // 超时
-        return -NETERR_CLI_CMD_TIMEOUT;
-    } else if (ret<0 || 0==strncmp(node_wlan0.reply, "FAIL", 4)) {
-        // 失败
-        return -NETERR_CLI_CMD_ERR;
-    }
-    // 判断返回结果
-    if (0!=strncmp(node_wlan0.reply, "OK", 2)) {
-        // 命令发送没有成功
-        return -NETERR_CLI_CMD_ERR;
-    }
-#if 0
-    if (strncmp(cmd, "PING", 4) == 0)
-        node_wlan0.reply[reply_len] = '\0';
-#endif
-    // 发送 scan 完成
-    // 发送 scan_result
-    ret = wpa_ctrl_request(node_wlan0.ctrl_conn, "SCAN_RESULT", strlen("SCAN_RESULT"),
-                               node_wlan0.reply, &reply_len, NULL);
-    //printf("<==[%s][%d] %s\n", __func__, __LINE__, node_wlan0.reply);
-    if (-2==ret) {
-        // 超时
-        return -NETERR_CLI_CMD_TIMEOUT;
-    } else if (ret<0 || 0==strncmp(node_wlan0.reply, "FAIL", 4)) {
-        // 失败
-        return -NETERR_CLI_CMD_ERR;
-    }
+    int ret = wpa_cmd(&node_wlan0, "SCAN");
+    if (ret<0)
+        return ret;
+    return 0;
+}
 
+int wifi_sta_scan_result() {
+    if (NULL==node_wlan0.ctrl_conn)
+        return -NETERR_CHECK_PARAM;
+    int ret = wpa_cmd(&node_wlan0, "SCAN_RESULTS");
+    if (ret<0)
+        return ret;
+    return 0;
+}
+
+int wifi_sta_connect(const char* ssid, const char* passw) {
+    wpa_cmd(&node_wlan0, "REMOVE_NETWORK all");
+    // 这里命令一定要大写
+    wpa_cmd(&node_wlan0, "ADD_NETWORK");
+    wpa_cmd(&node_wlan0, "ADD_NETWORK");
+    wpa_cmd(&node_wlan0, "SET_NETWORK 0 ssid \"men\"");
+    // 88994272
+    wpa_cmd(&node_wlan0, "SET_NETWORK 0 psk \"8899427\"");
+    wpa_cmd(&node_wlan0, "ENABLE_NETWORK 0");
+    wpa_cmd(&node_wlan0, "SAVE_CONFIG");
     return 0;
 }
 

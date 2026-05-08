@@ -14,10 +14,14 @@ pro_raw_socket_recv ?= test_raw_socket_recv
 #CC = /home/zhh/work/YT312/02_YT312门禁控制器/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux/bin/arm-linux-gnueabihf-gcc
 #CC = /home/zhh/work/YT312/02_YT312门禁控制器/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux/bin/arm-linux-gnueabihf-gcc
 #CC = /home/zhh/work/yt328_reader/020.源代码/toolchain/gcc-linaro-5.5.0-2017.10-x86_64_arm-linux-gnueabihf/bin/arm-linux-gnueabihf-gcc
-CC = /media/cp/1f4ae5c9-7b98-4e3d-b846-2a0bd3c8cfa2/home/zhh/work/yt815/数智化中枢网关/gcc-linaro-10.2.1-2021.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
+# 815
+#CC = /media/cp/1f4ae5c9-7b98-4e3d-b846-2a0bd3c8cfa2/home/zhh/work/yt815/数智化中枢网关/gcc-linaro-10.2.1-2021.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc
 #ARCH=arm
 #CFLAGS += -L/home/zhh/work/YT312/02_YT312门禁控制器/gcc-linaro-arm-linux-gnueabihf-4.7-2013.03-20130313_linux/arm-linux-gnueabihf/libc/lib/arm-linux-gnueabihf -lpthread
 #CFLAGS += -L/home/zhh/work/yt328_reader/020.源代码/toolchain/gcc-linaro-5.5.0-2017.10-x86_64_arm-linux-gnueabihf/arm-linux-gnueabihf/libc/lib -lpthread
+# A8
+CC=/home/cp/tmp/toolchain/linux-devkit/sysroots/i686-arago-linux/usr/bin/arm-linux-gnueabihf-gcc
+CFLAGS += -std=gnu99 -lrt
 
 # x86
 #LINK_LIBS += -lpthread
@@ -55,7 +59,7 @@ ${pro_wifi}: test_wifi.c ../wifi_opt.c ../wpas/os_unix.c ../wpas/wpa_ctrl.c ../.
 	${CC} -o $@ $^ ${CFLAGS}
 	echo "gcc"
 
-
+.PHONY: clean
 clean:
 	rm ${pro} ${pro_nl} ${pro_gate} ${pro_dns} ${pro_link} ${pro_dhcp} 
 	rm ${pro_multicast_recv} ${pro_multicast_send}
