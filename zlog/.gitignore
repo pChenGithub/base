@@ -4,3 +4,6 @@ include
 lib
 zlog-1.2.18
 zlog-1.2.18.tar.gz
+
+1.2.18.tar.gz
+build_x86/
