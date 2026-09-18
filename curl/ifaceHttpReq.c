@@ -9,23 +9,45 @@
 
 #define HTTP_DEBUG 1
 
-// 写文件
+/**
+ * 将 http 返回内容写入文件
+ * @param buffer 本次返回的数据
+ * @param len    本次数据长度(字节)
+ * @param arg    HTTP_REPLY 指针
+ * @return 0 成功，负值为错误码
+ * @note 不限制写入总大小：基础库不设业务性上限，由调用者自行斟酌控制；
+ *       reply->offset 记录已写字节数，供调用者判断
+ */
 static int http_reply_file(const char* buffer, int len, void* arg)
 {
-    HTTP_REPLY* reply = (HTTP_REPLY*)arg;
-    FILE* fp = reply->p;
-//    int maxLen = reply->len;
+    HTTP_REPLY* reply = (HTTP_REPLY*)arg;   /* 返回上下文，含文件句柄与已写偏移 */
+    FILE* fp = NULL;                        /* 回写目标文件句柄 */
+    size_t wrCnt = 0;                       /* 实际写入的字节数 */
 
-//    if(maxLen <= (reply->offset + len))
-//    {
-//        // 缓存不足，报错
-//        reply->ret = -HTTPERROR_BUFF_NOTENOUGH;
-//        return -HTTPERROR_BUFF_NOTENOUGH;
-//    }
+    /* 上下文为空：无处记录 ret，直接返回 */
+    if(NULL == reply)
+    {
+        LOG_E("文件回写上下文为空");
+        return -HTTPERROR_CHECK_PAREM;
+    }
 
-    // 请求返回写入文件
-    //LOG_D("http_reply_file len %d ", len);
-    fwrite(buffer, len, 1, fp);
+    /* 其余入参校验：可记录到 reply->ret */
+    if(NULL == buffer || NULL == reply->p || len <= 0)
+    {
+        reply->ret = -HTTPERROR_CHECK_PAREM;
+        LOG_E("文件回写参数无效, ret %d", reply->ret);
+        return -HTTPERROR_CHECK_PAREM;
+    }
+
+    fp = (FILE*)reply->p;
+    /* 按字节写入并校验实际长度（原实现 fwrite(buffer, len, 1, fp) 察觉不到部分写） */
+    wrCnt = fwrite(buffer, 1, (size_t)len, fp);
+    if(wrCnt != (size_t)len)
+    {
+        reply->ret = -HTTPERROR_FILE_WRITE;
+        LOG_E("文件回写失败, 期望 %d, 实际 %u", len, (unsigned int)wrCnt);
+        return -HTTPERROR_FILE_WRITE;
+    }
 
     reply->offset += len;
 
@@ -483,7 +505,7 @@ int httpPutUploadBinaryFile(const char* url, char* data)
     CURL* curl = NULL;
     struct curl_slist* headers = NULL;
     CURLcode res;
-    struct stat file_info;
+    struct stat file_info = {0};    /* 待上传文件信息，取 st_size 作为上传长度 */
 
     // 打开文件
     FILE* fp = fopen(data, "rb");
@@ -491,7 +513,12 @@ int httpPutUploadBinaryFile(const char* url, char* data)
     {
         return -HTTPERROR_OPENFILE;
     }
-    stat(data, &file_info);
+    if(0 != stat(data, &file_info))
+    {
+        LOG_E("获取文件信息失败: %s", data);
+        ret = -HTTPERROR_FILE_STAT;
+        goto curlInitError;
+    }
 
     memset(&reply, 0, sizeof(reply));
     reply.type = RET_NONE;

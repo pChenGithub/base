@@ -21,6 +21,8 @@ extern "C" {
 #define HTTPERROR_OPERATION_TIMEDOUT    6   // 请求超时
 #define HTTPERROR_COULDNT_CONNECT   7   // 服务器不能连接
 #define HTTPERROR_MALLOC            8   // 分配内存失败
+#define HTTPERROR_FILE_STAT         9   // 获取文件信息失败
+#define HTTPERROR_FILE_WRITE        10  // 返回内容写文件失败
 
 /* ---------------- HTTP 传输层配置（内部使用，两个 .c 共用） ---------------- */
 /* 说明：内网自签证书，按产品要求刻意关闭证书校验，勿误判为缺陷；
