@@ -1,0 +1,240 @@
+---
+description: C 编码规范：文件组织、命名、函数设计、内存管理、注释风格、禁止项与正反示例（嵌入式 C）
+globs: "**/*.{c,h}"
+---
+
+# C 编码规范
+
+## 适用范围
+
+- 本项目全部 C 源码（.c/.h），如 protocol/、task/ 等底层模块；含与上层 C++/Qt 混编的 C 接口文件
+- 通用规范（注释/下标/错误日志/构建约束等通则）见 `code_general.mdc`：通则放通用文件，本文件放语言特例并互相引用
+- 融合来源：类型级 `rules-c-coding-00`（common_4_codebuddy/01_c_coding.mdc + qt_4_codebuddy/02_c_standard.md）、项目级 `rules-01-c-coding`、C 专用 `rule-02-c-standard`、全项目 `rule-01-coding-standard`（P0 系列）
+- 冲突处理：按"C 专用 > 项目级 > 类型级"取更严格者（如栈上内存阈值取 1024B）；与更具体项目级规则（`rules/{项目名}/`）并存均须遵守
+- 合规判定：代码本身符合本规范（含命名、保护宏、注释、禁止项）方为合规，不符合即不合规，须修正后再提交（P0-0）
+
+## 编程语言
+
+- 语言：C
+- 语言版本特性：项目兼容 C89/C99；影响编码的版本差异（C89 不支持 `//` 注释、局部变量须函数开头声明；C99 支持 VLA 但禁用）已落到各小节与禁止项
+
+## 文件组织
+
+- **文件命名**：源文件 `snake_case.{h|c}`，模块_功能两段式，如 `sensor_driver.c`
+- **Include Guard**：`#ifndef`/`#define`/`#endif`，宏名 `__文件名_H__`（`__` 前缀 + `__` 后缀），禁止 `#pragma once`
+
+```c
+#ifndef __SENSOR_DRIVER_H__
+#define __SENSOR_DRIVER_H__
+// declarations...
+#endif /* __SENSOR_DRIVER_H__ */
+```
+
+- **Include 顺序**：模块头（本文件对应 .h 置首）→ 项目头 → 第三方 → 系统，组间空行分隔
+
+## 命名规范
+
+| 类型 | 风格 | 示例 |
+|------|------|------|
+| 函数 | 小写驼峰 | `initDisplay()`、`readSensor()` |
+| 全局变量 | `g_` 前缀 + 小写驼峰 | `g_systemTicks` |
+| 局部变量 | 小写驼峰 | `retCode`、`bytesRead` |
+| 宏 | UPPER_SNAKE_CASE | `MAX_BUFFER_SIZE` |
+| typedef 类型 | PascalCase 或 `_t` | `SensorData`、`tick_t` |
+| 枚举类型 | PascalCase | `SystemState` |
+| 枚举值 | UPPER_SNAKE_CASE | `STATE_IDLE`、`STATE_ERROR` |
+
+## 函数设计
+
+- **返回值**：仅 `void` 或 `int`，禁止 `bool`；`int` 语义：0=成功，<0=错误码（错误码宏定义为正数，返回时加 `-`），>0=正常正数值
+- **参数校验**：公开 API 必须校验指针参数与关键值
+- **函数长度**：单函数 ≤ 80 行，超过需拆分
+
+## 变量声明位置（C89）
+
+- 局部变量必须在函数开头（第一条可执行语句之前）声明，禁止在代码块中间声明
+
+## 数组传参
+
+- 数组作函数参数必须同时传入长度，并在函数内做越界校验
+- 调用方传长度禁止直接写数字，必须用 `sizeof` 运算
+- `sizeof` 仅适用于编译期已知大小的数组；已退化指针须显式传长度，调用方用变量名而非字面量
+
+## 局部数组长度
+
+- 局部数组的长度**直接用字面量**书写，**不得为其定义宏**（长度就在定义处，就地自解释，单点使用无需抽宏）
+- 该字面量属"就地自解释"情形，**不受"禁止魔法数字裸用"约束**（见禁止项）
+- 仅限"局部数组长度"这一场景；需跨多处复用、或语义需说明的长度仍应具名（`const` 变量/枚举/宏）
+
+```c
+/* 正确：局部数组长度直接写字面量 */
+u8 buf[512];
+
+/* 错误：为局部数组长度定义宏 */
+#define BUF_SIZE 512
+u8 buf[BUF_SIZE];
+```
+
+## 复杂数据传参
+
+- 结构体等复杂数据类型作函数参数**必须用指针传参**（`T *`），禁止按值传参（避免大块数据拷贝，提高程序运行效率）
+- 函数内不修改时用 `const T *` 表达只读意图
+- 标量类型（`int`/`char`/`float`/指针等）按值传参即可
+- 与"指针空检查"配合：指针参数入口判空
+
+```c
+/* 正确：结构体指针传参，函数内只读用 const */
+int updateNfcInfo(ST_UserNfcInfo *info)
+{
+    if (info == NULL)
+    {
+        return -ERR_PARAM_INVALID;
+    }
+    return writeNfcRecord(info);
+}
+```
+
+## 指针空检查
+
+- 所有指针在使用（解引用、传参）前必须检查是否为 `NULL`
+
+## 内存管理
+
+- 超过 1024 字节的内存禁止在栈上分配（局部数组），须用堆（`malloc`/`free`）或全局/静态变量；使用前需向用户确认方案
+- `malloc`/`calloc` 必有对应 `free`，分配后检查 != NULL；`free` 后置 NULL 防悬空指针
+
+```c
+free(buf);
+buf = NULL;
+```
+
+## 错误处理与日志
+
+- 错误码宏定义为正数，返回时加 `-`；错误优先 + 提前退出
+- **错误返回值必打日志**：凡判断返回值出错（`ret < 0`、指针/参数校验失败等）的分支必须 `LOG_E` 打印提示（含错误码/失败原因），禁止静默返回
+
+```c
+#define ERR_PARAM_INVALID 1
+#define ERR_NO_MEMORY     2
+return -ERR_PARAM_INVALID;
+```
+
+```c
+/* 正确：错误分支必打日志（含错误码/原因） */
+int updateNfcInfo(ST_UserNfcInfo *info)
+{
+    int ret;
+
+    if (info == NULL)
+    {
+        LOG_E("参数无效");
+        return -ERR_PARAM_INVALID;
+    }
+    ret = writeNfcRecord(info);
+    if (ret < 0)
+    {
+        LOG_E("写入失败, 错误码 %d", ret);
+        return ret;
+    }
+    return 0;
+}
+```
+
+- 日志：`LOG_I`/`LOG_E`/`LOG_D`，全部中文，不加前后缀；`lib_log_init()` 必须先于所有 `LOG_*` 调用
+
+## C/C++ 互操作
+
+- 所有 C 头文件必须用 `extern "C"` 包裹（`__cplusplus` 守卫）
+- C++→C：include C 头文件即可；C→C++：通过 `extern "C"` 包装
+- 禁止 C++ 非静态成员函数指针直接传 C API
+
+## 嵌入式 C 约束
+
+- 用 `<string.h>`、`<stdio.h>` 安全版本；避免 `scanf`
+- 变长参数仅用于日志/格式化
+- 位操作用宏封装：`SET_BIT(reg, bit)`、`CLR_BIT(reg, bit)`、`GET_BIT(reg, bit)`
+- 寄存器操作必须显式注释
+
+## 全局状态
+
+- 模块内用 `static` 文件作用域变量，`init()`/`deinit()` 管理生命周期
+- 禁止跨模块非 const 全局变量（用访问函数替代）
+
+## 注释风格
+
+- 文件头：`/** 文件用途、作者、日期 */`
+- 公开函数须文档化注释（类 JSDoc 标签风格）：`@brief`、`@param`、`@return`（P0-4）
+- 统一 `/* */` 块注释，中文描述；行内注释解释边界与"为什么"
+- 等号线分隔逻辑段落；复杂算法、位操作、寄存器操作必须注释
+- **公开函数文档注释位置**：置于头文件（`.h`）声明处（`/** @brief / @param / @return */` 块）；实现（`.c`）处**不重复**标签式注释，实现细节用 `/* */` 注释补充，防止声明/实现两处说明漂移
+
+## 禁止项
+
+- 禁止 `#pragma once`（用 include guard）
+- 禁止 `//` 注释（C89 不兼容，统一 `/* */`）
+- 禁止可变长数组（VLA）、`alloca`
+- 禁止无边界字符串函数：`strcpy`/`strcat`/`sprintf`，改用 `strncpy`/`snprintf`
+- 禁止代码块中间声明变量
+- 禁止数组传参不带长度、调用方写死数字
+- 禁止结构体等复杂数据按值传参（用指针，只读用 `const T *`）
+- 禁止指针未判空即使用（含未初始化/悬垂指针）
+- 禁止超过 1024 字节在栈上分配（局部数组，须用堆或全局/静态变量）
+- 禁止跨模块非 const 全局变量
+- 禁止函数返回 `bool`
+- 禁止错误返回分支不打印日志（判断返回值失败后必须 `LOG_E` 提示）
+- 禁止隐式指针转换（void* 与具体类型互转须显式 cast）
+- 禁止 `goto` 跳转（错误处理除外，需局部、单向）
+- 禁止魔法数字裸用，须具名宏或 enum（**例外**：局部数组长度直接用字面量，见「局部数组长度」）
+- 禁止局部数组长度用宏定义（直接用字面量，见「局部数组长度」）
+- 禁止 `scanf`
+- 禁止 1 起始下标，数组/序列下标一律从 0 开始（P0-2-1）
+- 禁止手动修改 Makefile（构建文件由配置/脚本生成，需改走构建配置，P0-1）
+
+## 正向示例
+
+```c
+/* 正确：判空 + 携带长度 + sizeof 计算 + 错误码返回 + 开头声明 */
+int fillBuffer(u8 *buf, int bufLen)
+{
+    int i;
+
+    if (buf == NULL || bufLen <= 0)
+    {
+        return -ERR_PARAM_INVALID;
+    }
+    for (i = 0; i < bufLen; i++)
+    {
+        buf[i] = 0;
+    }
+    return 0;
+}
+
+u8 buffer[256];
+fillBuffer(buffer, sizeof(buffer));
+```
+
+## 反向示例
+
+```c
+/* 错误：不判空 + 无长度参数 + 数字字面量 + 中间声明 */
+u8 buffer[256];
+fillBuffer(buffer, 256);   /* 错误：调用方写死数字 */
+
+void fillBuffer(u8 *buf)
+{
+    int i;
+
+    for (i = 0; i < 100; i++)
+    {
+        buf[i] = 0;   /* 错误：无长度校验，可能越界 */
+    }
+}
+```
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：项目专属约定 / 团队规范 / 工具链约定等 -->

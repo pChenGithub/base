@@ -1,0 +1,335 @@
+---
+description: C++ 编码规范：文件组织、命名、注释、设计模式、错误处理、内存管理、禁止项与正反示例（GCC 4.7 / C++11 / Qt4 混编）
+globs: "**/*.{cpp,h,hpp,cc}"
+---
+
+# C++ 编码规范
+
+## 适用范围
+
+- 本项目全部 C++ 源码（.cpp/.h/.hpp/.cc），如 ui/、db/、task/ 等模块；含与底层 C 实现混编的 C++ 封装接口
+- 通用规范（注释/下标/错误日志/构建约束等通则）见 `code_general.mdc`：通则放通用文件，本文件放语言特例并互相引用
+- 融合来源：`rules-00-cpp-coding`、全项目 `rule-01-coding-standard`（P0 系列）、C++ 专用 `rule-03-cpp-standard`（P0-CPP 系列）
+- 冲突处理：通用规范（命名/文件命名/保护宏/下标/注释）以 `rule-01`（P0-2/P0-3/P0-5 等，自称最高优先级）为准，`rule-03` 与其一致并引用之；`rules-00` 与其冲突处（成员变量 `snake_case_`、局部变量 snake_case、保护宏 `大写文件名_H`）被覆盖，项目存量代码印证（成员 `mValue`/`mItemLen`、保护宏 `__WIDGETCONFIGDEF_H__`）
+- 优先级：rules 规范 > 已有代码风格；rules 未覆盖的细节（缩进、括号换行等）参照存量代码保持一致
+- 合规判定（P0-0）：编码规范检查的是代码本身，代码必须直接合规，不能靠注释把违规代码"解释"成合理；注释是解释"为什么这样写"，不是豁免凭证
+
+## 编程语言
+
+- 语言：C++
+- 语言版本特性：编译器 **GCC 4.7**，`CMAKE_CXX_STANDARD 11`（`-std=c++0x`），与 Qt4 混编
+  - **允许**：lambda、`auto`（限局部变量且语义清晰时）、`= default`/`= delete`、`nullptr`、`std::unique_ptr`、变参模板、类内成员初始化、range-based for
+  - **禁止（C++14）**：`std::make_unique`、`auto` 返回类型推导、泛型 lambda `[](auto x)`、`std::enable_if_t` 等 `_t` 类型别名、`std::cbegin`/`std::cend`、二进制字面量 `0b1010`、数字分隔符 `1'000'000`
+  - **禁止（C++17+）**：`std::apply`、`if constexpr`、折叠表达式、`[[maybe_unused]]`、结构化绑定、`std::optional`/`std::variant`
+  - **禁止（通用）**：异常、RTTI、裸露 `new`/`delete`
+
+## 文件组织
+
+### 文件命名（P0-3）
+
+- 小写 + 下划线分隔**两段**：`类型_名称.扩展名`；头文件与源文件同名
+- 例：`dialog_templimit.cpp`、`tb_templimit.h`；禁止驼峰、大写、超两段、单段
+
+### Include Guard（P0-5）
+
+- `#ifndef`/`#define`/`#endif`，宏名 `__文件名_H__`（`__` 前缀 + `__` 后缀），禁止 `#pragma once`
+
+```cpp
+#ifndef __DIALOG_TEMPLIMIT_H__
+#define __DIALOG_TEMPLIMIT_H__
+// ...
+#endif /* __DIALOG_TEMPLIMIT_H__ */
+```
+
+### Include 顺序
+
+对应项目头(.cpp) → 项目头 → 第三方 → 系统，组间空行分隔
+
+### 类声明与实现分离
+
+- **声明**放 `.h`：仅成员变量声明、方法签名、嵌套类型声明，声明之间不空行
+- **实现**放 `.cpp`：所有方法体，实现函数之间空一行
+- 禁止在 `.h` 中实现方法；例外：模板类/模板方法、简短单行方法（一行赋值/返回的 setter/getter/flag toggle）
+- 禁止在 `.h` 中类外实现函数（自由函数/`inline`/`static` 辅助函数）；例外：模板函数
+
+### 一个头文件只放一个类
+
+- 例外：辅助类型（枚举、POD 结构体、typedef/using 别名、前向声明）、模板类及其特化
+
+### 函数参数传递
+
+- 非基本类型（`string`、`vector`、自定义类等）→ `const T&`，**禁止按值传递**（避免多余拷贝）；构造函数、成员方法、自由函数无一例外
+- **C 风格结构体（`ST_` 前缀 POD 类型）等复杂数据 → 指针传参**（`T *`，只读用 `const T *`），禁止按值传参，避免大块数据拷贝（与 db 层接口一致，如 `selectUserNfcInfo(ST_UserNfcInfo *nfcInfo, ...)`）；指针参数入口判空
+- 基本类型（`int`/`unsigned int`/`double`/`char*` 等）→ 按值
+- 函数内需修改参数副本：参数仍 `const T&`，函数体内显式拷贝局部变量
+
+```cpp
+// 正确：const 引用传参；需副本时函数内显式拷贝
+int processPath(const std::string& path) {
+    std::string localPath = path;   // 显式拷贝，意图清晰
+    localPath += "/config";
+    return 0;
+}
+```
+
+```cpp
+// 正确：C 风格结构体指针传参（只读用 const），入口判空
+int updateNfcInfo(ST_UserNfcInfo *nfcInfo) {
+    if (nfcInfo == NULL) {
+        return -PTERR_INVALID_PARAM;
+    }
+    return DBFactory::GetInstance()->FullReplace(&TB_UserNfcInfo, nfcInfo);
+}
+```
+
+## 局部数组长度
+
+- 局部数组的长度**直接用字面量**书写，**不得为其定义宏**（长度就在定义处，就地自解释，单点使用无需抽宏）
+- 该字面量属"就地自解释"情形，**不受"禁止魔法数字裸用"约束**（见禁止项）
+- 仅限"局部数组长度"这一场景；需跨多处复用、或语义需说明的长度仍应具名（`const` 变量/枚举/常量）
+
+```cpp
+// 正确：局部数组长度直接写字面量
+char buf[4096];
+
+// 错误：为局部数组长度定义宏
+#define CACHE_SIZE 4096
+char buf[CACHE_SIZE];
+```
+
+## 命名规范
+
+| 类型 | 风格 | 示例 |
+|------|------|------|
+| 类/结构体 | 大写驼峰（PascalCase） | `TempController`、`UiManager` |
+| 函数/方法 | 小写驼峰 | `getTemperature()`、`init()` |
+| 成员变量 | `m` 前缀 + 大写驼峰 | `mTempValue`、`mCount` |
+| 局部变量 | 小写驼峰 | `tempValue`、`count` |
+| 全局变量 | `g_` 前缀 + 小写+下划线 | `g_temp_limit`、`g_dev_meta` |
+| 常量/宏 | 全大写 + 下划线 | `MAX_TEMP_COUNT`、`MSG_WARNING` |
+| 类型别名 | 小写短名 | `u8`、`s16`、`u32`（typedef/using，禁 `#define`） |
+
+- 禁止：变量/函数首字母大写、下划线式变量、类首字母小写、成员缺 `m` 前缀、`m` 前缀后小写（须 `mTempValue` 而非 `m_tempValue`）
+- 与 C 规范的差异：C++ 成员变量用 `m` 前缀（C 结构体字段用 camelCase）；存量代码成员 `mValue`/`mItemLen`/`mScreenTimeout` 印证
+
+## 注释风格
+
+- 文件头：`/** 文件用途、作者、日期 */`
+- 类注释：类声明前描述职责和使用方式
+- API 注释（P0-4）：所有函数/方法必须 JSDoc 风格：功能说明 + `@param` + `@return`（void 可省略 `@return`）；**无参函数（含 Qt slot）同样必须注释**
+
+```cpp
+/**
+ * 设置指定槽位的温度限制值
+ * @param index 温度传感器槽位索引（0~TEMP_SLOT_TOTAL-1）
+ * @param low   低温限值（0.1°C单位）
+ * @param high  高温限值（0.1°C单位）
+ */
+void setLimit(int index, s16 low, s16 high);
+```
+
+- 变量注释（P0-4）：所有变量声明必须加注释说明用途
+- 结构体/枚举注释（P0-4）：定义注释用途，每个成员必须注释含义
+- 宏定义注释（P0-4）：所有 `#define` 必须加注释说明用途
+- 复杂逻辑注释（P0-4）：分支条件多、算法复杂、业务规则非显而易见的代码段必须注释逻辑意图
+- 分隔线（3.1）：`// ====...` 分隔逻辑段落
+
+```cpp
+// ============================================================
+// 显示/输入初始化
+// ============================================================
+```
+
+- 统一 `//` 行注释，中文描述；行内注释解释边界与"为什么"
+- **API 注释位置（P0-4）**：JSDoc 注释（`/** */` 块）置于**头文件声明处**（函数声明上方：功能说明 + `@param` + `@return`）；实现（`.cpp`）处**不重复** JSDoc 标签式注释，实现细节用 `//` 行注释补充，防止声明/实现两处说明漂移（存量声明缺注释的逐步补齐）
+
+## 设计模式
+
+- **单例**：Meyer's Singleton（`static` 局部变量、拷贝/赋值 `= delete`、private 构造/析构）
+- **接口**：`I` 前缀纯虚类
+
+```cpp
+class ITask {
+public:
+    virtual int init() = 0;
+    virtual int loop() = 0;
+    virtual int deinit() = 0;
+};
+```
+
+## 错误处理与日志
+
+- **返回值**：**优先** `void` 或 `int`；`int`：0=成功，<0=错误码，>0=正常正数值（计数/长度等）。表达布尔语义时可返回 `bool`（如 `isXxx()`/`hasXxx()` 查询类接口），非布尔语义的接口不得用 `bool` 承载错误码/计数
+- **错误码**：宏定义为**正数**，返回时加 `-` 前缀，使实际返回负数
+
+```cpp
+#define PTERR_INVALID_PARAM  1
+return -PTERR_INVALID_PARAM;   // 实际返回 -1
+```
+
+- **错误优先 + 提前退出**：先检查失败 → `LOG_E` → 清理 → `return`/`goto`，正常流程不嵌套
+- **错误返回值必打日志**：凡判断返回值出错（`ret < 0` 等）的分支必须 `LOG_E` 打印提示（含错误码/失败原因），禁止静默返回
+- **return 模式**（无资源清理）：逐步检查，失败即返回
+- **goto 模式**（需释放资源）：失败跳转统一清理出口，`goto` 仅限此场景（局部、单向）
+
+```cpp
+int process(const char* path) {
+    int ret = -1;
+    void* buf = malloc(SZ); if (!buf) { LOG_E("OOM"); return -1; }
+    int fd = open(path, O_RDONLY); if (fd < 0) { LOG_E("打开失败"); goto clean_buf; }
+    // ... 正常逻辑 ...
+    ret = 0;
+clean_fd: close(fd);
+clean_buf: free(buf);
+    return ret;
+}
+```
+
+- **日志**：`LOG_I`/`LOG_E`/`LOG_D`（zlog 库），内容**全部中文**、**不加** `[module]` 前缀后缀；`LOG_D` 依赖 `extern char lib_log_debug_flag`（为 1 时输出）；**硬约束**：`main()` 第一行业务代码必须是 `lib_log_init()`
+
+## 内存管理
+
+- 优先栈分配；非基本类型传 `const&` 减少拷贝
+- **QObject 派生类**：用 Qt 父子对象树管理生命周期，构造时指定 `parent`，**禁止手动 `delete` 子对象**（P0-CPP6）；LVGL 对象由 LVGL 管理，不手动 delete
+- **非 QObject 堆对象**：RAII，`std::unique_ptr`/`std::shared_ptr` 管理，禁止裸 `new`/`delete`
+- null 指针检查后使用；全局对象用单例静态局部变量
+- 禁止 C 风格内存操作裸用（用 RAII 容器/智能指针替代）
+
+## 全局变量管理
+
+- **类型定义**：`include/devmeta.h` — `ST_DEV_META` 统一结构体，子结构必须 `typedef` 为独立 `ST_` 前缀类型
+- **变量定义**：`global.cpp` — `ST_DEV_META g_dev_meta = {0}`
+- **变量导出**：`include/global.h` — `extern ST_DEV_META g_dev_meta`
+- **命名**：结构体 `ST_UPPER_SNAKE`，字段 camelCase
+
+```cpp
+typedef struct { int flagDebug; int flagRunning; } ST_STATUS_INFO;
+typedef struct { int screenWidth; int screenHeight; } ST_HW_PARAM;
+typedef struct { ST_STATUS_INFO statusInfo; ST_HW_PARAM hwParam; } ST_DEV_META;
+```
+
+## 类设计
+
+- **构造/析构禁止调用虚函数**（P0-CPP3）：构造期间派生类未就绪，虚调用不会多态，极易崩溃；初始化逻辑用非虚成员函数，派生类构造完成后再显式调用虚接口
+- **基类析构必须 `virtual`**（P0-CPP4）：确保经基类指针删除时正确调用派生类析构；例外：明确不会被继承的类（`final`）
+- **const 正确性**（P0-CPP5）：不修改成员变量的成员函数必须 `const`；不修改的入参用 `const` 引用/`const` 指针
+- **成员变量初始化**（P0-CPP2）：优先类内初始化；依赖构造参数的必须在初始化列表中初始化，禁止在构造函数体内赋值
+
+```cpp
+class TempSensor {
+private:
+    int mIndex;                 // 依赖构造参数，初始化列表
+    int mThreshold = 100;       // 固定默认值，类内初始化
+public:
+    explicit TempSensor(int index) : mIndex(index) {}
+    int getThreshold() const { return mThreshold; }   // const 成员
+};
+```
+
+## 禁止项
+
+- 禁止裸用 `new`/`delete`（须 RAII/智能指针/容器管理所有权）
+- 禁止在头文件使用 `using namespace std`
+- 禁止 C 风格强制转换 `(type)expr`（P0-CPP1，用 `static_cast`/`dynamic_cast`/`reinterpret_cast`/`const_cast`）
+- 禁止与 C 混编接口未用 `extern "C"` 包裹（底层 C 头文件同理用 `__cplusplus` 守卫）
+- 禁止头文件定义非 const 全局对象（跨 TU 初始化顺序不定）
+- 禁止在大函数内堆叠过深嵌套（超过 3 层须拆分）
+- 禁止 `goto` 跳转（仅错误处理、需释放资源时局部单向使用）
+- 禁止魔法数字裸用，须具名常量/enum（**例外**：局部数组长度直接用字面量，见「局部数组长度」）
+- 禁止局部数组长度用宏定义（直接用字面量，见「局部数组长度」）
+- 禁止 `#pragma once`（用 `__文件名_H__`）
+- 禁止在 `.h` 中实现方法 / 类外实现函数（模板、单行 setter/getter 例外）
+- 禁止非基本类型参数按值传递（用 `const T&`；`ST_` 结构体等复杂数据用指针 `T *`/`const T *`）
+- 禁止错误返回分支不打印日志（`if (ret < 0)` 等失败分支必须 `LOG_E`）
+- 禁止异常、RTTI（项目禁用）
+- 禁止 C++14 特性：`make_unique`/`auto` 返回推导/泛型 lambda/`_t` 别名/`cbegin`/`cend`/二进制字面量/数字分隔符
+- 禁止 C++17+ 特性：`if constexpr`/折叠表达式/结构化绑定/`optional`/`variant`/`[[maybe_unused]]`
+- 禁止成员变量在构造函数体内赋值（类内初始化或初始化列表，P0-CPP2）
+- 禁止构造函数调用虚函数（P0-CPP3）
+- 禁止基类非虚析构（P0-CPP4）
+- 禁止手动 `delete` QObject 子对象（P0-CPP6）
+- 禁止 1 起始下标，所有下标变量（循环变量/数组索引/slotId/pageIndex）从 0 开始，用 `<` 判断，禁止 `<=`（P0-2-1）
+- 禁止手动修改 Makefile（P0-1，qmake 从 .pro 生成，改配置须改 .pro）
+- 禁止 `#define` 定义类型别名（用 typedef/using）
+- 禁止错误码宏定义为负数（须正数 + 返回加 `-`）
+
+## 正向示例
+
+```cpp
+// 正确：智能指针 + static_cast + const 引用传参
+int sendRequest(const std::string& url, const std::string& payload) {
+    if (url.empty()) {
+        return -PTERR_INVALID_PARAM;
+    }
+    auto buf = std::unique_ptr<char[]>(new char[url.size() + 1]);
+    char* raw = static_cast<char*>(buf.get());
+    snprintf(raw, url.size() + 1, "%s", url.c_str());
+    return 0;
+}
+```
+
+```cpp
+// 正确：m 前缀成员 + 类内初始化 + 初始化列表 + const 查询
+class TempSensor {
+private:
+    int mIndex;
+    int mThreshold = 100;
+public:
+    explicit TempSensor(int index) : mIndex(index) {}
+    int getThreshold() const { return mThreshold; }
+};
+```
+
+```cpp
+// 正确：Meyer 单例
+class AppConfig {
+public:
+    static AppConfig& instance() {
+        static AppConfig inst;   // static 局部变量
+        return inst;
+    }
+    AppConfig(const AppConfig&) = delete;
+    AppConfig& operator=(const AppConfig&) = delete;
+private:
+    AppConfig() {}
+    ~AppConfig() {}
+};
+```
+
+## 反向示例
+
+```cpp
+// 错误：C 风格转换 + 裸指针手工管理
+DeviceInfo *dev = (DeviceInfo*)raw;              // 错误：应 static_cast
+int* tmp = (int*)malloc(n * sizeof(int));        // 错误：裸 new/delete 替代
+```
+
+```cpp
+// 错误：非基本类型按值传参 + 缺 m 前缀 + 构造体内赋值
+int sendRequest(std::string url, std::string payload);   // 错误：两次多余拷贝
+class Worker {
+private:
+    int value;              // 错误：缺 m 前缀
+public:
+    Worker(int v) { value = v; }   // 错误：应初始化列表
+};
+```
+
+```cpp
+// 错误：.h 内实现多行方法 + 构造函数调用虚函数
+class Sensor {
+public:
+    bool isAcceptable(int val) {    // 错误：头文件内实现多行方法
+        return val >= min_ && val <= max_;
+    }
+    Base() { init(); }              // 错误：构造期虚调用不触发多态
+};
+```
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：项目专属约定 / 团队规范 / 工具链约定等。Qt 样式设置、控件创建、生命周期管理可在此挂载（对应 rule-01 提及的 04_qt_standard） -->
