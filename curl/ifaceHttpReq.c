@@ -158,7 +158,8 @@ int httpUploadFile(const char* url, char* data, int len, char* admin, char* pass
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "http");
+    /* 与其余接口保持一致：缺省走 TLS（仅对不带协议前缀的 URL 生效） */
+    curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
     //headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -279,9 +280,9 @@ int httpGetReq(HTTP_REPLY_TYPE type, const char* url, const char* indata, char* 
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5);
     //curl_easy_setopt(curl, CURLOPT_HEADER, 1);
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
     //curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");//cacert.pem为curl官网下载的根证书文件
     //curl_easy_setopt(curl, CURLOPT_SSLVERSION , 3);
     //curl_easy_setopt(curl,CURLOPT_SSLVERSION,1);
@@ -401,9 +402,9 @@ int httpPutReq(HTTP_REPLY_TYPE type, const char* url, const char* indata, char* 
     //curl_easy_setopt(curl, CURLOPT_HEADER, 1);
     //curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
     //curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");//cacert.pem为curl官网下载的根证书文件
     //curl_easy_setopt(curl, CURLOPT_SSLVERSION , 3);
     //curl_easy_setopt(curl,CURLOPT_SSLVERSION,1);
@@ -515,9 +516,9 @@ int httpPutUploadBinaryFile(const char* url, char* data)
     curl_easy_setopt(curl, CURLOPT_READDATA, &reply);
     curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)file_info.st_size);
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     // 执行请求,等待回调结束
     LOG_I("req s");
@@ -614,9 +615,9 @@ int httpReqTimeout(HTTP_REPLY_TYPE type, const char* url, const char* indata,
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
     //curl_easy_setopt(curl, CURLOPT_HEADER, 1);
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
     //curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");//cacert.pem为curl官网下载的根证书文件
     //curl_easy_setopt(curl, CURLOPT_SSLVERSION , 3);
     //curl_easy_setopt(curl,CURLOPT_SSLVERSION,1);

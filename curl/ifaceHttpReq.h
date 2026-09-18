@@ -22,6 +22,14 @@ extern "C" {
 #define HTTPERROR_COULDNT_CONNECT   7   // 服务器不能连接
 #define HTTPERROR_MALLOC            8   // 分配内存失败
 
+/* ---------------- HTTP 传输层配置（内部使用，两个 .c 共用） ---------------- */
+/* 说明：内网自签证书，按产品要求刻意关闭证书校验，勿误判为缺陷；
+ *       日后需要开启时只改下面三个取值——VERIFY_STATUS 置 1L 开 OCSP、
+ *       VERIFY_PEER 置 1L 开证书链校验、VERIFY_HOST 置 2L 开域名校验 */
+#define HTTP_SSL_VERIFY_STATUS  0L  // OCSP 装订校验开关
+#define HTTP_SSL_VERIFY_PEER    0L  // 服务器证书链校验开关
+#define HTTP_SSL_VERIFY_HOST    0L  // 证书域名校验开关
+
 /**
  * http 返回内容处理回调
  * @param buffer 本次接收到的数据

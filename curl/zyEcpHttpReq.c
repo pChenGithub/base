@@ -108,9 +108,9 @@ int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     //headers = curl_slist_append(headers, "Content-Type:application/json");
     headers = curl_slist_append(headers, head_pro);
@@ -204,9 +204,9 @@ int httpGetToken(const char *url, const char *appid, const char *appsecret)
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
@@ -322,9 +322,9 @@ int httpDelEcpDev(const char *url, const char *device_sn, const char *app_secret
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     //headers = curl_slist_append(headers, "Content-Type:application/json");
     //headers = curl_slist_append(headers, head_pro);
@@ -409,9 +409,9 @@ int httpGetproperty(const char *url, const char *product_key, char *outdata, con
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     //headers = curl_slist_append(headers, "Content-Type:application/json");
     //headers = curl_slist_append(headers, head_pro);
@@ -501,9 +501,9 @@ int httpGetpropertyBysn(const char *url, const char *sn, char *outdata, const in
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     //headers = curl_slist_append(headers, "Content-Type:application/json");
     //headers = curl_slist_append(headers, head_pro);
@@ -592,9 +592,9 @@ int httpSetproperty(const char *url, const char *indata,
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     //headers = curl_slist_append(headers, "Content-Type:application/json");
     //headers = curl_slist_append(headers, head_pro);
@@ -691,9 +691,9 @@ static int httpDoCmd(const char *url, const char* path,
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     //headers = curl_slist_append(headers, "Content-Type:application/json");
     //headers = curl_slist_append(headers, head_pro);
@@ -800,9 +800,9 @@ int httpGetScenemodeBysn(const char *url, const char *sn, char *outdata, const i
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
 
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, HTTP_SSL_VERIFY_STATUS);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, HTTP_SSL_VERIFY_PEER);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, HTTP_SSL_VERIFY_HOST);
 
     //headers = curl_slist_append(headers, "Content-Type:application/json");
     //headers = curl_slist_append(headers, head_pro);
