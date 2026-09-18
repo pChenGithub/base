@@ -177,6 +177,10 @@ int httpUploadFile(const char* url, char* data, int len, char* admin, char* pass
     LOG_I("上传文件： %s", data);
     part = curl_mime_addpart(mime);
     curl_mime_name(part, "file");
+    /* 关键注释：curl_mime_filedata 会复制文件名，且调用时不打开文件（到 curl_easy_perform
+     * 才流式读取），此后 libcurl 不再引用 data 这块缓冲；因此本函数复用 data 承接返回内容
+     * （见上方 reply.p = data）是安全的。注意事项：① 请求返回后 data 中是返回内容，不再是
+     * 文件路径，调用方不可再按路径使用；② 待上传文件须在整个请求期间保持完整。 */
     curl_mime_filedata(part, data);
 
     part = curl_mime_addpart(mime);
@@ -199,6 +203,11 @@ int httpUploadFile(const char* url, char* data, int len, char* admin, char* pass
     {
         LOG_E("perform error %d", res);
         ret = -HTTPERROR_CURL_PERFORM;
+    }
+    else
+    {
+        /* 取回内容处理回调记录的返回值，避免"响应超出 data 缓冲"等错误被静默丢弃 */
+        ret = reply.ret;
     }
 
 curlInitError:

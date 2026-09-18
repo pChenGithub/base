@@ -117,8 +117,8 @@ int httpPutReq(HTTP_REPLY_TYPE type ,const char* url, const char* indata, char* 
 /**
  * http 上传文件（multipart/form-data，固定超时 10s）
  * @param url   请求地址
- * @param data  待上传文件的本地路径
- * @param len   缓存长度（当前实现用作响应缓冲上限，待 C-06 定论后同步修订）
+ * @param data  待上传文件的本地路径；调用后该缓冲将被返回内容覆盖（同一缓冲兼作返回）
+ * @param len   data 缓冲长度（即返回内容可写入的最大长度）
  * @param admin 认证用户名
  * @param pass  认证密码
  * @return 0 成功，负值为错误码
