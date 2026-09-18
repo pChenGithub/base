@@ -59,7 +59,15 @@ static size_t curl_write_cb(void* buffer, size_t size, size_t nitems, void* arg)
 int httpAddEcpDev(const char *url, const char *indata, char *outdata, const int outdatalen)
 {
     int ret = 0;
-    // 校验参数
+
+    /* 参数校验：任一为空即返回，避免 strlen(NULL) 崩溃；
+       输出长度为负会被 snprintf 当作巨大 size_t，导致越界写 */
+    if (NULL == url || NULL == indata || NULL == outdata || outdatalen <= 0)
+    {
+        LOG_E("httpAddEcpDev 参数检查失败");
+        return -HTTPERROR_CHECK_PAREM;
+    }
+
     // 校验token，如果过期，重新获取
     ret = httpGetToken(LOCAL_ECP_APP_HTTP, LOCAL_APP_ID, LOCAL_APP_SECRET);
     if (ret<0)
@@ -447,7 +455,14 @@ int httpGetproperty(const char *url, const char *product_key, char *outdata, con
 int httpGetpropertyBysn(const char *url, const char *sn, char *outdata, const int outdatalen)
 {
     int ret = 0;
-    // 校验参数
+
+    /* 参数校验：任一为空即返回，避免 snprintf 空指针解引用与负长度越界写 */
+    if (NULL == url || NULL == sn || NULL == outdata || outdatalen <= 0)
+    {
+        LOG_E("httpGetpropertyBysn 参数检查失败");
+        return -HTTPERROR_CHECK_PAREM;
+    }
+
     // 校验token，如果过期，重新获取
     ret = httpGetToken(url, LOCAL_APP_ID, LOCAL_APP_SECRET);
     if (ret<0)
@@ -739,7 +754,14 @@ int httpBroadcastCmd(const char *url, const char *indata, char *outdata, const i
 int httpGetScenemodeBysn(const char *url, const char *sn, char *outdata, const int outdatalen)
 {
     int ret = 0;
-    // 校验参数
+
+    /* 参数校验：任一为空即返回，避免 snprintf 空指针解引用与负长度越界写 */
+    if (NULL == url || NULL == sn || NULL == outdata || outdatalen <= 0)
+    {
+        LOG_E("httpGetScenemodeBysn 参数检查失败");
+        return -HTTPERROR_CHECK_PAREM;
+    }
+
     // 校验token，如果过期，重新获取
     ret = httpGetToken(url, LOCAL_APP_ID, LOCAL_APP_SECRET);
     if (ret<0)
