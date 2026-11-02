@@ -94,4 +94,6 @@ SOURCES += $$PWD/misc/mmc_opt.c
 HEADERS += $$PWD/misc/mmc_opt.h
 INCLUDEPATH *= $$PWD/misc
 }
+# net mgr（网络管理服务，内部按 M_NETMGR 判断是否编入）
+include ($$PWD/netmgr/netmgr.pri)
 
