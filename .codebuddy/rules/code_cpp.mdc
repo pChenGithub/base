@@ -5,6 +5,8 @@ globs: "**/*.{cpp,h,hpp,cc}"
 
 # C++ 编码规范
 
+> 分片：`code_cpp.mdc`（条文）/ `code_cpp_file.mdc`（文件组织与数组长度）/ `code_cpp_example.mdc`（示例）
+
 ## 适用范围
 
 - 适用语言：项目自研 C++ 源码（.cpp/.h/.hpp/.cc），含与底层 C 实现混编的 C++ 封装接口
@@ -25,83 +27,11 @@ globs: "**/*.{cpp,h,hpp,cc}"
 
 ## 文件组织
 
-### 文件命名（P0-3）
-
-- 小写 + 下划线分隔**两段**：`类型_名称.扩展名`；头文件与源文件同名
-- 例：`dialog_config.cpp`、`tb_config.h`；禁止驼峰、大写、超两段、单段
-
-### Include Guard（P0-5）
-
-- `#ifndef`/`#define`/`#endif`，宏名 `__文件名_H__`（`__` 前缀 + `__` 后缀），禁止 `#pragma once`
-
-```cpp
-#ifndef __DIALOG_CONFIG_H__
-#define __DIALOG_CONFIG_H__
-// ...
-#endif /* __DIALOG_CONFIG_H__ */
-```
-
-### Include 顺序
-
-对应项目头(.cpp) → 项目头 → 第三方 → 系统，组间空行分隔
-
-### 类声明与实现分离
-
-- **声明**放 `.h`：仅成员变量声明、方法签名、嵌套类型声明，声明之间不空行
-- **实现**放 `.cpp`：所有方法体，实现函数之间空一行
-- 禁止在 `.h` 中实现方法；例外：模板类/模板方法、简短单行方法（一行赋值/返回的 setter/getter/flag toggle）
-- 禁止在 `.h` 中类外实现函数（自由函数/`inline`/`static` 辅助函数）；例外：模板函数
-
-### 一个头文件只放一个类
-
-- 例外：辅助类型（枚举、POD 结构体、typedef/using 别名、前向声明）、模板类及其特化
-
-### 函数参数传递
-
-- 非基本类型（`string`、`vector`、自定义类等）→ `const T&`，**禁止按值传递**（避免多余拷贝）；构造函数、成员方法、自由函数无一例外
-- **C 风格结构体（`ST_` 前缀 POD 类型）等复杂数据 → 指针传参**（`T *`，只读用 `const T *`），禁止按值传参，避免大块数据拷贝（与 db 层接口一致，如 `selectUserInfo(ST_USER_INFO *userInfo, ...)`）；指针参数入口判空
-- 基本类型（`int`/`unsigned int`/`double`/`char*` 等）→ 按值
-- 函数内需修改参数副本：参数仍 `const T&`，函数体内显式拷贝局部变量
-
-```cpp
-// 正确：const 引用传参；需副本时函数内显式拷贝
-int processPath(const std::string& path) {
-    std::string localPath = path;   // 显式拷贝，意图清晰
-    localPath += "/config";
-    return 0;
-}
-```
-
-```cpp
-// 正确：C 风格结构体指针传参（只读用 const），入口判空
-int updateUserInfo(ST_USER_INFO *userInfo) {
-    if (userInfo == NULL) {
-        return -PTERR_INVALID_PARAM;
-    }
-    return DBFactory::GetInstance()->FullReplace(&TB_USER_INFO, userInfo);
-}
-```
+- 文件组织条见 `code_cpp_file.mdc`
 
 ## 数组长度
 
-- 规则同 `code_c.mdc`「数组长度」（类成员数组同样直接写字面量，不受“禁止魔法数字裸用”约束）
-
-```cpp
-// 正确：类/结构体内数组成员、局部数组的长度直接写字面量
-struct MqKey {
-    char addr[128];     // 服务地址副本
-    char user[32];      // 用户名副本
-};
-
-void clearBuf() {
-    char buf[4096];
-    ...
-}
-
-// 错误：为类/结构体内数组成员、局部数组长度定义宏
-#define CACHE_SIZE 4096
-char buf[CACHE_SIZE];
-```
+- 数组长度条见 `code_cpp_file.mdc`
 
 ## 命名规范
 
@@ -266,76 +196,11 @@ public:
 
 ## 正向示例
 
-```cpp
-// 正确：智能指针 + static_cast + const 引用传参
-int sendRequest(const std::string& url, const std::string& payload) {
-    if (url.empty()) {
-        return -PTERR_INVALID_PARAM;
-    }
-    auto buf = std::unique_ptr<char[]>(new char[url.size() + 1]);
-    char* raw = static_cast<char*>(buf.get());
-    snprintf(raw, url.size() + 1, "%s", url.c_str());
-    return 0;
-}
-```
-
-```cpp
-// 正确：m 前缀成员 + 类内初始化 + 初始化列表 + const 查询
-class ItemHandler {
-private:
-    int mIndex;
-    int mThreshold = 100;
-public:
-    explicit ItemHandler(int index) : mIndex(index) {}
-    int getThreshold() const { return mThreshold; }
-};
-```
-
-```cpp
-// 正确：Meyer 单例
-class AppConfig {
-public:
-    static AppConfig& instance() {
-        static AppConfig inst;   // static 局部变量
-        return inst;
-    }
-    AppConfig(const AppConfig&) = delete;
-    AppConfig& operator=(const AppConfig&) = delete;
-private:
-    AppConfig() {}
-    ~AppConfig() {}
-};
-```
+- 正例见 `code_cpp_example.mdc`
 
 ## 反向示例
 
-```cpp
-// 错误：C 风格转换 + 裸指针手工管理
-DeviceInfo *dev = (DeviceInfo*)raw;              // 错误：应 static_cast
-int* tmp = (int*)malloc(n * sizeof(int));        // 错误：裸 new/delete 替代
-```
-
-```cpp
-// 错误：非基本类型按值传参 + 缺 m 前缀 + 构造体内赋值
-int sendRequest(std::string url, std::string payload);   // 错误：两次多余拷贝
-class Worker {
-private:
-    int value;              // 错误：缺 m 前缀
-public:
-    Worker(int v) { value = v; }   // 错误：应初始化列表
-};
-```
-
-```cpp
-// 错误：.h 内实现多行方法 + 构造函数调用虚函数
-class Sensor {
-public:
-    bool isAcceptable(int val) {    // 错误：头文件内实现多行方法
-        return val >= min_ && val <= max_;
-    }
-    Base() { init(); }              // 错误：构造期虚调用不触发多态
-};
-```
+- 反例见 `code_cpp_example.mdc`
 
 ## 个性化扩展
 

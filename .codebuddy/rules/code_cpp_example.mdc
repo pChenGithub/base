@@ -1,0 +1,109 @@
+---
+description: C++ 编码规范示例分片：正反向示例（智能指针、RAII、命名与错误处理写法），条文见 code_cpp.mdc
+alwaysApply: true
+---
+
+# C++ 编码规范 · 示例
+
+> 分片：`code_cpp.mdc`（条文）/ 本文件（正向与反向示例）
+
+## 适用范围
+
+- 本项目自研 C++ 源码的示例样板；条文与判定口径见 `code_cpp.mdc`
+
+## 编程语言
+
+- C++
+
+## 语言版本特性
+
+- 见 `code_cpp.mdc`
+
+## 注释风格
+
+- 见 `code_cpp.mdc`「注释风格」
+
+## 禁止项
+
+- 见 `code_cpp.mdc`「禁止项」
+
+## 正向示例
+
+```cpp
+// 正确：智能指针 + static_cast + const 引用传参
+int sendRequest(const std::string& url, const std::string& payload) {
+    if (url.empty()) {
+        return -PTERR_INVALID_PARAM;
+    }
+    auto buf = std::unique_ptr<char[]>(new char[url.size() + 1]);
+    char* raw = static_cast<char*>(buf.get());
+    snprintf(raw, url.size() + 1, "%s", url.c_str());
+    return 0;
+}
+```
+
+```cpp
+// 正确：m 前缀成员 + 类内初始化 + 初始化列表 + const 查询
+class ItemHandler {
+private:
+    int mIndex;
+    int mThreshold = 100;
+public:
+    explicit ItemHandler(int index) : mIndex(index) {}
+    int getThreshold() const { return mThreshold; }
+};
+```
+
+```cpp
+// 正确：Meyer 单例
+class AppConfig {
+public:
+    static AppConfig& instance() {
+        static AppConfig inst;   // static 局部变量
+        return inst;
+    }
+    AppConfig(const AppConfig&) = delete;
+    AppConfig& operator=(const AppConfig&) = delete;
+private:
+    AppConfig() {}
+    ~AppConfig() {}
+};
+```
+
+## 反向示例
+
+```cpp
+// 错误：C 风格转换 + 裸指针手工管理
+DeviceInfo *dev = (DeviceInfo*)raw;              // 错误：应 static_cast
+int* tmp = (int*)malloc(n * sizeof(int));        // 错误：裸 new/delete 替代
+```
+
+```cpp
+// 错误：非基本类型按值传参 + 缺 m 前缀 + 构造体内赋值
+int sendRequest(std::string url, std::string payload);   // 错误：两次多余拷贝
+class Worker {
+private:
+    int value;              // 错误：缺 m 前缀
+public:
+    Worker(int v) { value = v; }   // 错误：应初始化列表
+};
+```
+
+```cpp
+// 错误：.h 内实现多行方法 + 构造函数调用虚函数
+class Sensor {
+public:
+    bool isAcceptable(int val) {    // 错误：头文件内实现多行方法
+        return val >= min_ && val <= max_;
+    }
+    Base() { init(); }              // 错误：构造期虚调用不触发多态
+};
+```
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：项目专属约定 / 团队规范 / 工具链约定等。Qt 样式设置、控件创建、生命周期管理可在此挂载（对应 rule-01 提及的 04_qt_standard） -->

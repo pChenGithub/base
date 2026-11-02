@@ -1,0 +1,101 @@
+---
+description: C 编码规范补充片：文件组织与目录组织（自包含模块、include 顺序、目录分层），条文见 code_c.mdc
+alwaysApply: true
+---
+
+# C 编码规范 · 文件与目录组织
+
+> 分片：`code_c.mdc`（条文）/ 本文件（文件组织 / 目录组织）
+
+## 适用范围
+
+- 本项目自研 C 源码（.c/.h）的工程结构约定；其余条文见 `code_c.mdc`
+
+## 编程语言
+
+- C
+
+## 语言版本特性
+
+- 文件与目录组织的版本要求同 `code_c.mdc`「语言版本特性」
+
+## 注释风格
+
+- 文件与目录组织的注释要求见 `code_c.mdc`「注释风格」
+
+## 禁止项
+
+- 文件与目录组织遵守 `code_c.mdc`「禁止项」全部条款
+
+## 文件组织
+
+- **文件命名**：源文件 `snake_case.{h|c}`，模块_功能两段式，如 `sensor_driver.c`
+- **Include Guard**：`#ifndef`/`#define`/`#endif`，宏名 `__文件名_H__`（`__` 前缀 + `__` 后缀），禁止 `#pragma once`
+
+```c
+#ifndef __SENSOR_DRIVER_H__
+#define __SENSOR_DRIVER_H__
+// declarations...
+#endif /* __SENSOR_DRIVER_H__ */
+```
+
+- **Include 顺序**：模块头（本文件对应 .h 置首）→ 项目头 → 第三方 → 系统，组间空行分隔
+- **头文件内容顺序（固定）**：include guard → include → 宏 / 常量 → 类型定义（`struct` / `enum` / `typedef`）→ `extern` 变量声明 → **函数声明（集中放在文件后部）**
+- **函数声明集中成段**：同一头文件的函数声明统一放在末尾的“函数区”，**禁止**与宏、类型、变量声明交错穿插；新增函数**追加到函数区末尾**，不插队
+- 函数区内按调用层次（底层 → 上层）或模块功能分组，组间空行分隔；组内可用 `/* ===== 分组名 ===== */` 注释分隔
+- 例外：`static inline` 函数定义可紧随其依赖的类型之后，但仍须集中在同一函数区，不散落
+- 实现文件（`.c`）不受此约束：`static` 前置声明可放在使用点之前
+
+```c
+/* 正确：头文件结构（函数集中在末尾函数区） */
+#ifndef __MODULE_H__
+#define __MODULE_H__
+
+#include "module_type.h"
+
+#define MODULE_MAX 8
+
+typedef struct { int count; } ModuleCtx;
+extern ModuleCtx g_moduleCtx;
+
+/* ===== 查询 ===== */
+int ModuleGetCount(void);
+
+/* ===== 操作 ===== */
+int ModuleStart(void);
+int ModuleStop(void);
+
+#endif /* __MODULE_H__ */
+```
+
+```c
+/* 错误：函数声明与宏/类型交错散落 */
+#define MODULE_MAX 8
+int ModuleStart(void);      /* 插在宏与类型之间 */
+typedef struct { int count; } ModuleCtx;
+int ModuleGetCount(void);   /* 与类型声明交错 */
+```
+
+## 目录组织（服务 / 模块分层）
+
+- **按职责 / 模块分目录**，禁止按文件类型平铺（不要把同类后缀全部堆在同一层）
+- **独立服务 / 模块各自一个子目录**，目录内自包含（实现 `.c` 与其 `.h` 同目录）
+- 跨模块访问**只经头文件接口**：禁止包含其它模块的 `.c`，禁止共享其私有 `static`
+- 新增模块的固定动作：① 建模块目录并放入 `.c/.h`；② 构建脚本登记源文件；③ 头文件目录加入 include 路径
+- 目录名与文件名保持一致的模块语义；具体项目的目录清单以项目文档为准，不在本规范内维护（避免两处漂移）
+
+## 正向示例
+
+- 文件与目录组织正例见 `code_c.mdc`「正向示例」
+
+## 反向示例
+
+- 文件与目录组织反例见 `code_c.mdc`「反向示例」
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：项目专属约定 / 团队规范 / 工具链约定等 -->

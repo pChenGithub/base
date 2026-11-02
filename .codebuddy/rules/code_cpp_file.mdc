@@ -1,0 +1,124 @@
+---
+description: C++ 编码规范补充片：文件组织与数组长度（头文件/源文件职责、include 顺序、数组长度字面量），条文见 code_cpp.mdc
+alwaysApply: true
+---
+
+# C++ 编码规范 · 文件组织与数组长度
+
+> 分片：`code_cpp.mdc`（条文）/ 本文件（文件组织 / 数组长度）
+
+## 适用范围
+
+- 本项目自研 C++ 源码（.cpp/.h/.hpp）的工程结构约定；其余条文见 `code_cpp.mdc`
+
+## 编程语言
+
+- C++
+
+## 语言版本特性
+
+- 文件组织与数组长度的版本要求同 `code_cpp.mdc`「语言版本特性」
+
+## 注释风格
+
+- 文件组织与数组长度的注释要求见 `code_cpp.mdc`「注释风格」
+
+## 禁止项
+
+- 文件组织与数组长度遵守 `code_cpp.mdc`「禁止项」全部条款
+
+## 文件组织
+
+### 文件命名（P0-3）
+
+- 小写 + 下划线分隔**两段**：`类型_名称.扩展名`；头文件与源文件同名
+- 例：`dialog_config.cpp`、`tb_config.h`；禁止驼峰、大写、超两段、单段
+
+### Include Guard（P0-5）
+
+- `#ifndef`/`#define`/`#endif`，宏名 `__文件名_H__`（`__` 前缀 + `__` 后缀），禁止 `#pragma once`
+
+```cpp
+#ifndef __DIALOG_CONFIG_H__
+#define __DIALOG_CONFIG_H__
+// ...
+#endif /* __DIALOG_CONFIG_H__ */
+```
+
+### Include 顺序
+
+对应项目头(.cpp) → 项目头 → 第三方 → 系统，组间空行分隔
+
+### 类声明与实现分离
+
+- **声明**放 `.h`：仅成员变量声明、方法签名、嵌套类型声明，声明之间不空行
+- **实现**放 `.cpp`：所有方法体，实现函数之间空一行
+- 禁止在 `.h` 中实现方法；例外：模板类/模板方法、简短单行方法（一行赋值/返回的 setter/getter/flag toggle）
+- 禁止在 `.h` 中类外实现函数（自由函数/`inline`/`static` 辅助函数）；例外：模板函数
+
+### 一个头文件只放一个类
+
+- 例外：辅助类型（枚举、POD 结构体、typedef/using 别名、前向声明）、模板类及其特化
+
+### 函数参数传递
+
+- 非基本类型（`string`、`vector`、自定义类等）→ `const T&`，**禁止按值传递**（避免多余拷贝）；构造函数、成员方法、自由函数无一例外
+- **C 风格结构体（`ST_` 前缀 POD 类型）等复杂数据 → 指针传参**（`T *`，只读用 `const T *`），禁止按值传参，避免大块数据拷贝（与 db 层接口一致，如 `selectUserInfo(ST_USER_INFO *userInfo, ...)`）；指针参数入口判空
+- 基本类型（`int`/`unsigned int`/`double`/`char*` 等）→ 按值
+- 函数内需修改参数副本：参数仍 `const T&`，函数体内显式拷贝局部变量
+
+```cpp
+// 正确：const 引用传参；需副本时函数内显式拷贝
+int processPath(const std::string& path) {
+    std::string localPath = path;   // 显式拷贝，意图清晰
+    localPath += "/config";
+    return 0;
+}
+```
+
+```cpp
+// 正确：C 风格结构体指针传参（只读用 const），入口判空
+int updateUserInfo(ST_USER_INFO *userInfo) {
+    if (userInfo == NULL) {
+        return -PTERR_INVALID_PARAM;
+    }
+    return DBFactory::GetInstance()->FullReplace(&TB_USER_INFO, userInfo);
+}
+```
+
+## 数组长度
+
+- 规则同 `code_c.mdc`「数组长度」（类成员数组同样直接写字面量，不受“禁止魔法数字裸用”约束）
+
+```cpp
+// 正确：类/结构体内数组成员、局部数组的长度直接写字面量
+struct MqKey {
+    char addr[128];     // 服务地址副本
+    char user[32];      // 用户名副本
+};
+
+void clearBuf() {
+    char buf[4096];
+    ...
+}
+
+// 错误：为类/结构体内数组成员、局部数组长度定义宏
+#define CACHE_SIZE 4096
+char buf[CACHE_SIZE];
+```
+
+## 正向示例
+
+- 文件组织与数组长度正例见 `code_cpp.mdc`「正向示例」
+
+## 反向示例
+
+- 文件组织与数组长度反例见 `code_cpp.mdc`「反向示例」
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：项目专属约定 / 团队规范 / 工具链约定等。Qt 样式设置、控件创建、生命周期管理可在此挂载（对应 rule-01 提及的 04_qt_standard） -->
