@@ -1,5 +1,8 @@
 ---
-description: 编码通用规范：不限定语言的通则（注释、下标从0、错误日志、构建约束、代码合规性）与正反示例
+description: 编码通用规范：不限定语言的通则（注释、命名、接口变更须提案并经确认、下标从0、错误日志、不过度封装、构建约束）与正反示例
+# 必须为 true（不可删）：本文件不写 globs，若不显式声明则默认为 Agent Requested——只把 description 摆给 AI、
+# 正文需其主动引用 ⇒ 事实上不会加载（2026-09-30 实证）。通用规范不绑定具体文件类型，故用 Always，而非 globs。
+alwaysApply: true
 ---
 
 # 编码通用规范
@@ -9,10 +12,12 @@ description: 编码通用规范：不限定语言的通则（注释、下标从0
 - 跨语言通用规范，适用于本项目所有源码（C/C++/Qt 等），**不限定具体语言**
 - 来源：全项目 `rule-01-coding-standard`（P0 系列通用条目）
 - 与语言文件的关系：通用文件放"通则"，语言文件（`code_c.mdc`/`code_cpp.mdc`/`code_vue.mdc`）放"语言特例"并互相引用；同一主题冲突时以更严格者为准
+- **优先级最高（硬性）**：本规范条款优先于存量代码、局部风格与个人 / AI 习惯。代码与规范冲突时**以规范为准**，不得以“现有代码就是这样 / 大家都这么写”为由沿用违规写法；存量按「存量策略」在改动该文件时收敛
+- **示例自遵守（硬性）**：规范文件中的正例必须自身完全合规（命名风格与段数、客观性、格式），反例必须显式标注“错误”并给出合规改写；禁止出现“正确示例却违反本规范其它条款”的情况
 
 ## 编程语言
 
-- 跨语言通用（C/C++/Qt/脚本等），不限定；语言专属规范见 `code_c.mdc`（C）、`code_cpp.mdc`（C++）、`code_vue.mdc`（Vue 前端，Vue 2 + Element UI）
+- 跨语言通用（C/C++/Qt/脚本等），不限定；语言专属规范见 `code_c.mdc`（C）、`code_cpp.mdc`（C++）、`code_vue.mdc`（Vue）、`code_ts.mdc`（TypeScript）
 
 ## 语言版本特性
 
@@ -25,18 +30,83 @@ description: 编码通用规范：不限定语言的通则（注释、下标从0
 - 结构体/类/枚举注释：定义必须注释用途，每个成员必须注释含义（P0-4）
 - 宏定义注释：所有 `#define` 必须注释用途（P0-4）
 - 复杂逻辑注释：分支条件多、算法复杂、业务规则非显而易见的代码段必须注释逻辑意图（P0-4）
+- **层次与流程注释（强制）**：体现调用层次、装配顺序或处理阶段的代码（初始化 / 装配 / 状态机 / 多步流程），必须在每层或每步前加**一行简单注释**，说明"这一步做什么 / 为何是这个顺序 / 失败如何处理"；只解释层次关系与非自明的顺序约束，**禁止逐行复述函数名或 API**（`createScreen(); /* 创建屏幕 */` 属噪音）。正例：`createLayout(screen); /* 装配：内容 → 页面 → 浮层，页面须先于浮层（z-order） */`
 - 注释语言：中文；行内注释解释"为什么"而非"是什么"
 - 优先级：**规范优先**——有规范要求（如"变量声明必须注释"）则必须写注释，即使上下文/存量代码没写；没有规范约束时才与上下文风格保持一致
 
+## 命名约定
+
+- 用下划线分隔的标识符（**函数 / 变量 / 宏定义 / 枚举常量 / 文件名**）最多 **3 段**：
+  `module_poll_ms`、`UI_DUR_FONT`、`g_module_port`、`MODULE_CMD_START` 合规；
+  `MODULE_POLL_GET_SENSOR_INTERVAL_MS`（6 段）、`module_proto_get_sensor_status`（5 段）、`MODULE_CMD_START_FAST`（4 段）不合规
+- 超段意味着限定词在层层堆叠，应按“**模块 + 对象 + 属性**”压缩为三段；属性用通用缩写（`MS` / `S` / `X` / `Y` / `W` / `H` / `FONT` / `MAX` / `NUM` / `CNT` / `A`·`B`·`C` 等）
+- **驼峰命名同样适用**：按大写字母分界切词，词数即段数，最多 **3 段**；前缀不计段——作用域前缀（`g_` / `s_` / `m`）与类型前缀（`c` / `f` / `i` / `n` / `u` / `p`，如 `cValueLevel`、`fScaleFactor`）、连续大写缩写（`UI` / `MQTT` / `URL`）均按 1 段/不计数处理。
+  `uiMainInit`（ui/Main/Init）、`powerClickCb`（power/Click/Cb）、`g_uiMain`（去前缀 ui/Main）、`cValueLevel`（去 `c` 后 Value/Level）合规；
+  `uiPanelItemCreate`（4 段）、`uiPageItemApplyStyle`（5 段）不合规，压缩时合并限定词（如 `uiItemCreate`、`uiItemStyle`）
+- **文件名同样适用**（不含扩展名）：`ui_module_demo.c`（3 段）、`module_proto_a.c`（3 段）合规；`ui_image_item_icon.c`（4 段）不合规。资源生成文件（图片/字体）须在生成命令里直接给合规变量名（如 `python <生成脚本> x.png ui_img_demo ui/assets`）
+- **枚举常量同样适用**（`enum` / 匿名枚举的成员，含 `typedef enum`）：段数与函数/变量/宏同一上限（≤3 段），风格仍为 UPPER_SNAKE_CASE。
+  `MODULE_CMD_START`、`MODULE_STATE_IDLE`、`APP_ERR_PARAM`（均 3 段）合规；
+  `MODULE_CMD_START_FAST`、`MODULE_STATE_IDLE_EXTRA`、`APP_SCB_ERR_PARAM`（4 段）不合规；压缩时把多余限定词并进末段属性（`MODULE_CMD_START_FAST` → `MODULE_CMD_START`、`MODULE_STATE_IDLE_EXTRA` → `MODULE_STATE_IDLE`、`APP_SCB_ERR_PARAM` → `APP_ERR_PARAM`）
+- **类型名不受段数约束**：结构体/枚举/`typedef` 类型名仍按语言规范用 PascalCase（如 `ModuleEntry`、`ST_MODULE_STATE`），本条只管下划线命名的段数
+- **例外**：① 第三方库/协议既定名不改（如 paho 的 `MQTTCLIENT_*`、cJSON 的 `cJSON_*`、`lvgl` 目录、协议帧字段枚举）；② 目录名暂不受限；③ 类型名不在本条范围内（见语言规范）
+- **存量策略**：新增或本次改到的定义（**含枚举常量**）必须满足 ≤3 段（下划线命名与驼峰命名同一上限）；历史超段命名在“改到该文件”时顺带收敛，不做一次性全量机械重命名（避免大批量替换引入误改）
+
+## 接口变更（模块对外接口，强制）
+
+> 判定对象：模块头文件中导出的函数、宏、结构体字段、枚举值、回调签名；`static` 内部实现不在此列。
+
+I1. 先提案、后动手：变更前逐项列出 ① 符号名与所在头文件 ② 变更类型（新增 / 删除 / 修改）③ 变更后签名 ④ **接口作用**（谁在什么场景调用）⑤ **变更理由**（为什么必须改）⑥ 影响面（调用方清单、行为 / ABI 兼容性）⑦ 替代方案（为何不采用）。
+I2. **必须经用户明确确认后才可修改**；未确认前只允许阅读与整理方案，不得改动头文件或调用点。
+I3. 批量变更逐项列出，禁止“顺手一起改”；一次确认只覆盖提案中列明的范围。
+I4. 删除或修改签名必须同时给出**迁移方案**（旧调用方如何改），并在同一次变更内更新全部调用点。
+I5. 完成后输出对照表（旧 → 新）+ 调用点更新清单 + 编译 / 校验结果。
+I6. 禁止未经确认的：重命名、调整参数顺序或类型、改变返回值语义、删除或重排结构体字段、改变枚举值数值。
+
+**提案模板（示例）**
+
+| 项 | 内容 |
+|---|---|
+| 符号 / 位置 | `module_task_start()` @ `module/module_api.h` |
+| 变更类型 | 修改（新增 1 个参数） |
+| 变更后签名 | `int module_task_start(uint32_t period_ms)` |
+| 接口作用 | 调用方启动周期任务；由装配入口在初始化阶段调用一次 |
+| 变更理由 | 周期需按配置下发，硬编码无法满足 |
+| 影响面 | 调用方 2 处；旧签名调用将编译失败，无 ABI 兼容问题 |
+| 迁移方案 | 两处调用补传配置值；`period_ms = 0` 表示使用默认周期 |
+| 替代方案 | 保留旧接口 + 新增 setter（被否：两条事实源） |
+
 ## 禁止项
 
+- 禁止层次与流程代码缺少说明注释（初始化 / 装配 / 状态机 / 多步流程）：**缺失即违规**，以注释复述 API 名同样违规（判据与写法见「注释风格」层次与流程注释条）
 - 禁止用注释为违规代码"解释"合理性（P0-0）：编码规范检查的是**代码本身**，代码必须直接合规；注释是解释"为什么这样写"，不是"为什么不遵守规范"的豁免凭证
-- 禁止错误返回分支不打印日志：判断返回值出错（`ret < 0`、参数校验失败等）的分支必须打印日志提示（含错误码/失败原因），禁止静默返回
+- 禁止以存量代码或局部风格为由违反本规范：规范优先，冲突时改代码，不得反过来放宽规则条款
+- 禁止错误返回分支不打印日志（**基础模块除外**，见 `code_base.mdc`）：判断返回值出错（`ret < 0`、参数校验失败等）的分支必须打印日志提示（含错误码/失败原因），禁止静默返回
+- 基础模块（`base/` 下基础库）另有专项要求（独立性 + 通用性、错误码契约、不打印日志、句柄式多实例），见 `code_base.mdc`（按 globs 仅在 `base/` 下加载）
+- 禁止指针参数在函数内部以默认值兜底：非法入参必须在**入口严格判空**并按契约返回（返回错误码 / 谓词返回"不匹配"），不得用 `p ? p : ""`、`NULL == p ? 0 : *p` 之类写法掩盖非法入参（见 `code_c.mdc`「指针空检查」）
+- 禁止数组拷贝不校验长度：目标容量用 **`sizeof` 动态计算**，源长度超出目标容量时以错误码返回，**禁止截断、禁止越界写**（见 `code_c.mdc`「数组写入与长度校验」）
 - 禁止错误处理嵌套判断（错误优先、提前返回）：每条失败路径必须**独立判断、立即返回/跳出**（`return`/`goto`），不得"外层条件通过后再判内层条件"；函数**正常流程须零嵌套**，`if`/`for` 嵌套层数取最小
+- 禁止取值调用后延迟判空/兜底（取值即判、短路退出）：凡可能失败或可能返回空的取值调用（`cJSON_Parse`、`cJSON_GetObjectItem`、`getfield_*`、各类 `GetXxx()`/`FindXxx()` 等），**判定必须紧接取值**并沿用短路退出（记日志 → 释放已持有资源 → `return`）；禁止把同一指针的判空分散到多个使用点，禁止用三元/默认值兜底（如 `p ? p : ""`、`(NULL == p) ? NULL : ...`）把失败推迟到后续使用处。**必需节点**（缺了则整体无意义，如响应体的 `data`）取其即判空/判类型并退出；**可选字段**（可缺信息）须在取值处注释声明"字段可缺 + 兜底值"。反过来也不允许为不可能的情况堆防御（如循环内已保证范围内的取值再判空），避免掩盖真实失败路径（见 `code_cpp.mdc`「错误处理与日志」）
+- 禁止函数名与实际职责不符（**命名即契约**）：函数名必须准确表达其职责；禁止"名为 A 职能却做 B"；一个函数承担多项互不相关职责时，应拆分或改名，不得用注释、参数开关掩盖。**命名、职责、调用位置三者必须一致**——名字说做什么、代码就做什么、且放在该做这件事的层
+- 禁止跨职责塞入调用（**编排归属**）：构建 / 封装函数只创建、处理自身对象，不得在其中调用页面级 / 模块级初始化（定时器、线程、全局注册、生命周期控制）；同一对象的创建、暂停 / 恢复、销毁必须在**同一层**，由拥有该生命周期的上层函数统一编排，顺序满足"依赖先建后用"（如 `pageCreate()` 依次建头/体后建定时器；反例：`createHeader()` 末尾顺带 `createTimers()`）
+- 禁止处理与职责无关的数据（只处理需要的内容）：函数的取值 / 解析 / 打印只覆盖其**职责所需**的内容——调用方不使用的字段不取、不判断、不打印（协议后续新增字段同样如此）；确需忽略的字段应在注释中写明"不处理"，避免后人补回。反向同样禁止："反正取到了"就顺手处理（无谓取值 + 无谓兜底只是噪音，还会掩盖真实需求）
+- 禁止整批暂存、整批提交（逐条独立生效）：处理多条数据（协议数组 / 批量列表 / 循环条目）时，**以单条为有效性粒度**——每条独立校验，**有效即生效**；无效条目**当条跳过**（记日志），不影响其它条目与已有数据。**禁止**为了"整批有效 / 整批一致"而先把全部结果暂存到本地数组、解析完成后再统一写回：该写法付出额外空间与二次遍历，却给不出真正的原子性（写回本身仍是逐条赋值、非原子）。**例外**：协议 / 业务明确要求整批原子性（批量事务、必须整批提交的接口）时照协议实现，并在注释中写明依据
 - 禁止下标从 1 开始（P0-2-1）：所有下标变量（循环变量/数组索引/slotId/pageIndex 等）一律从 0 开始，用 `<` 判断边界，禁止 `<=`；遍历对象本身编号从 1 开始时，优先改命名使其从 0 开始，而非循环内从 1 遍历
-- 禁止魔法数字裸用，须具名常量/enum（**例外**：局部数组长度直接用字面量，见 `code_c.mdc` / `code_cpp.mdc` 的「局部数组长度」）
+- 禁止函数 / 变量 / 宏定义 / 枚举常量 / 文件名使用超过 3 段的下划线命名，或超过 3 段的驼峰命名（驼峰按大写字母分界计词；详见「命名约定」；第三方既定名、类型名按该节例外处理）
+- 禁止魔法数字裸用，须具名常量/enum（**例外**：数组长度直接用字面量，见 `code_c.mdc` / `code_cpp.mdc` 的「数组长度」）
+- 禁止用裸数字表达**状态**（模式 / 相位 / 步骤 / 阶段 / 类型等）：新增状态量必须**先定义 enum**（或具名宏）再写逻辑，禁止 `2 == phase`、`phase = 1` 这类比较与赋值；状态值只允许以枚举常量出现
 - 禁止变量定义与初始化分离：变量必须在**定义处同时初始化**（局部变量/成员变量/全局变量一律适用），禁止"先定义、后赋值"或"定义后靠 `memset` 补初始化"
 - 禁止手动修改 Makefile（P0-1）：Makefile 由 qmake 从 `.pro` 自动生成，改编译配置/增删源文件须改 `.pro` 后重新生成
+- 禁止在函数内定义 `static` 变量（C/C++）：函数内的静态缓冲 / 静态状态一律提为**文件级 `static` 变量**并置于使用它的函数之前——静态状态集中在文件层便于统一查看与审计，藏在函数体内的跨调用状态极易被漏看。**唯一例外**：Meyer 单例的静态实例（`static AppConfig inst;`，语义上必须置于函数内并依赖 C++11 线程安全初始化，见 `code_cpp.mdc`「设计模式」）
+
+- 禁止模块内部过度封装（**简单直接优先**）：模块内部不得为了"看起来整齐/对称"再包一层无实质逻辑的函数——函数体只是"取参数 → 调另一个函数 → 返回"、且仅一处调用时，直接写在调用处即可（如 `lv_obj_get_user_data()` 这类一行取值，判空写在调用处，不必包 `xxxGetCtx()`）。**判定**：这层封装是否至少承担一项——① 参数校验/契约收口；② 类型/单位/格式转换；③ 被 ≥2 处复用；④ 隔离变化点（平台/实现替换）？四项皆无为过度封装，必须内联。**例外**：模块对外导出的接口允许保留薄封装（契约与隔离变化点在外部），但内部实现之间不叠"纯转发"层；同时禁止反向极端——把本应独立的校验/转换逻辑硬塞进调用处造成重复
+
+- 禁止宏定义的"值"还留在算式里（**宏值一步到位**）：取值型宏必须是**最终字面量**（数字/字符串/枚举），不得写成 `(5 * 1000)`、`(A * B)`、`(X - Y) / 2` 这类"看到宏还要再算一次"的表达式；派生/换算过程一律写进**注释**（如 `#define MODULE_TIMEOUT_MS 5000 /* 5s = 5 × 1000 */`）。目的：用时零成本、阅读即得值、避免单位/量纲在两层之间算错。**例外**：① 数组元素个数用 `sizeof(arr) / sizeof(arr[0])`（避免两处维护）；② 位掩码 `(1U << n)`（位号即语义）；③ 函数式宏（如 `MD5_ROTL`）不属"取值宏"，不受此限
+
+- 禁止把**运行 / 调试临时产物**提交进仓库：stdout / stderr 重定向文件、gdb 日志、崩溃转储、堆栈快照（`*.stackdump`）等。临时输出应写入**构建目录**（已忽略）或用完即删；缺少忽略规则时应**先补 `.gitignore`**（注意：`.gitignore` 对**已被跟踪**的文件无效，历史误提交的文件须显式 `git rm`）
+
+- 禁止资源用完继续持有（**用完即释放**）：内存、文件/目录句柄、锁、临时缓冲等资源，一旦后续流程不再使用，必须在**最后一次使用之后立即释放**（释放后置空或复位为关闭态）；禁止"先申请、拖到函数末尾统一释放"。**判定**：最后一次使用与释放之间若还夹着与释放无关的步骤（后续解析、赋值、业务处理等），即为延迟释放。**例外**：① 同一资源需跨多段流程复用 → 在最后一个使用点释放；② 错误路径按错误处理条款立即释放已持有资源后返回。
+
+- 禁止无必要的中间缓冲与二次拷贝（**直接使用产出**）：被调接口已返回可用数据（指针 / 长度 / 偏移）时，直接使用或直接传递，禁止再分配一块缓冲把数据拷贝过去。**判定**：新缓冲的内容完全等于来源数据的连续片段、且使用点在同一函数内紧随其后 → 该缓冲无必要。**例外**：① 需要规整格式 / 合并多段 / 转码 / 截断；② 需与来源生命周期解耦（来源将被复用或释放）；③ 跨线程传递——三者须在注释写明理由。
 
 ## 正向示例
 
@@ -74,6 +144,121 @@ if (len <= 0)
     return -ERR_PARAM;
 }
 memcpy(buf, src, len);
+
+// 正确：必需节点取到即判空、短路退出（含释放已持有的资源）；可选字段在取值处声明兜底
+cJSON* data = cJSON_GetObjectItem(root, "data");
+if (NULL == data)
+{
+    logError("响应缺少 data 节点");
+    cJSON_Delete(root);
+    return -1;
+}
+char* addr = NULL;   // 字段可缺，取值失败时按 "(无)" 打印
+getfield_strPoint(data, "reportAddr", &addr);
+
+// 正确：只处理职责所需的内容（本函数职责=取通道状态，故只取 index 与 used）
+int index = -1;   // 通道号；-1 表示字段缺失或类型不符
+int used = -1;    // 通道状态；-1 表示字段缺失或类型不符
+getfield_int(item, "index", &index);
+getfield_int(item, "used", &used);
+if (0 <= index && index < CHANNEL_MAX)
+{
+    gChannel[index].sta = used;
+    logInfo("通道 %d 状态 %d", index, used);
+}
+// name / url / modfyTime 等与"取状态"无关：一律不取、不判断、不打印
+
+// 正确：下划线命名 ≤3 段（模块 + 对象 + 属性；枚举常量同样适用）
+#define MODULE_SENSORS_MS  5000
+#define UI_DUR_FONT        64
+int module_port_dev(int commPort);
+enum ModuleCmd
+{
+    MODULE_CMD_START = 0,   /* 3 段 */
+    MODULE_CMD_STOP  = 1    /* 3 段 */
+};
+enum ModuleState
+{
+    MODULE_STATE_IDLE  = 0, /* 3 段 */
+    MODULE_STATE_BUSY  = 1, /* 3 段 */
+    MODULE_STATE_FAULT = 2  /* 3 段 */
+};
+
+// 正确：驼峰命名 ≤3 段（按大写分界计词；g_ / s_ 前缀不计段）
+void uiMainInit(void);          /* ui / Main / Init */
+void powerClickCb(void);        /* power / Click / Cb */
+
+// 正确：宏值一步到位（字面量），算式只出现在注释里
+#define MODULE_TICK_MS        3000   /* 3s = 3 × 1000 */
+#define UI_CONTENT_Y      40     /* (800 − 720) / 2：内容区垂直居中偏移 */
+
+// 正确：模块内部直接用一行取值，判空写在调用处（不为它单造取上下文函数）
+void uiWarnRefresh(lv_obj_t *warn)
+{
+    uiWarnCtx *ctx = NULL;
+    if (NULL == warn)
+    {
+        return;
+    }
+    ctx = (uiWarnCtx *)lv_obj_get_user_data(warn);
+    if (NULL == ctx)
+    {
+        return;
+    }
+    warnScan(ctx);
+}
+```
+
+```text
+// 正确：逐条独立生效——单条校验通过即写回，无效条目当条跳过（不做整批暂存）
+for (int i = 0; i < count; ++i)
+{
+    int index = -1;
+    int used = -1;
+    getFieldInt(getArrayItem(list, i), "index", &index);
+    getFieldInt(getArrayItem(list, i), "used", &used);
+    if (index < 0 || index >= CHANNEL_MAX)
+    {
+        logError("通道号异常 %d，忽略该条", index);
+        continue;                      // 当条跳过，不影响其它条目
+    }
+    if (used < 0)
+    {
+        logError("通道 %d 缺少 used，忽略该条", index);
+        continue;
+    }
+    gChannel[index].sta = used;        // 有效即生效
+    logInfo("通道 %d 状态 %d", index, used);
+}
+```
+
+```text
+// 正确：解析完成即释放原文本（结果已独立持有数据），不拖到函数末尾
+int ret = textToObj(text, &obj);
+if (0 != ret)
+{
+    free(text);
+    logError("解析失败 %d", ret);
+    return -1;
+}
+free(text);            // 最后一次使用点：立即释放并置空
+text = NULL;
+applyObj(obj, out);    // 后续只依赖 obj
+objDelete(obj);
+return 0;
+```
+```text
+// 正确：直接用接口产出的堆字符串，写完即释放（无中转缓冲）
+char *text = buildText(obj);       // 接口返回已分配字符串，调用方负责释放
+if (NULL == text)
+{
+    logError("生成失败");
+    return -1;
+}
+writeFile(file, text, strlen(text));
+free(text);
+text = NULL;
+return 0;
 ```
 
 ## 反向示例
@@ -110,6 +295,122 @@ if (NULL != buf)
     return -ERR_PARAM;
 }
 return -ERR_PARAM;
+
+// 错误：判空点跟着使用点走——三元里兜一次、使用处再判一次（取值处未短路退出）
+cJSON* data = cJSON_GetObjectItem(root, "data");
+cJSON* list = (NULL == data) ? NULL : cJSON_GetObjectItem(data, "medias");
+if (!cJSON_IsArray(list))
+{
+    return -1;
+}
+if (NULL != data)                             // 违规：判空分散到使用点，失败未在取值处处理
+    getfield_strPoint(data, "reportAddr", &addr);
+
+// 错误：职责只是"取状态"，却把整条记录的字段全取一遍再打印（无谓取值 + 无谓兜底）
+char* name = NULL;
+char* url = NULL;
+char* modfy = NULL;                           // 这三个字段本函数根本不用
+getfield_strPoint(item, "name", &name);
+getfield_strPoint(item, "url", &url);
+getfield_strPoint(item, "modfyTime", &modfy);
+logInfo("index %d, name %s, used %d, url %s, modfyTime %s",
+        index, NULL == name ? "(无)" : name, used,
+        NULL == url ? "(无)" : url, NULL == modfy ? "(无)" : modfy);
+
+// 错误：限定词层层堆叠，下划线超过 3 段，读起来要"断句"
+#define MODULE_POLL_GET_SENSOR_INTERVAL_MS 5000
+int module_proto_get_sensor_status(int *version, unsigned char *sensors, int maxSensors);
+
+// 错误：枚举常量同样超 3 段（把多余限定词再挂一层）
+enum ModuleCmd
+{
+    MODULE_CMD_START_FAST = 0,    /* 4 段，应压成 MODULE_CMD_START */
+    MODULE_CMD_STOP_SLOW  = 1     /* 4 段，应压成 MODULE_CMD_STOP */
+};
+enum ModuleState
+{
+    MODULE_STATE_IDLE_EXTRA = 0,  /* 4 段，应压成 MODULE_STATE_IDLE */
+    MODULE_STATE_BUSY_FAST  = 1   /* 4 段，应压成 MODULE_STATE_BUSY */
+};
+
+// 错误：驼峰命名限定词堆叠超过 3 段（按大写分界计词）
+void uiPanelItemCreate(void);     /* ui / Panel / Item / Create = 4 段，应压成 uiItemCreate */
+void uiPageItemApplyStyle(void);  /* 5 段，应压成 uiItemStyle 之类 */
+
+// 错误：宏值还要再算一次——看代码看不出最终值，单位/量纲易在两层算错
+#define MODULE_TICK_MS        (3 * 1000)
+#define UI_CONTENT_Y      ((UI_SCREEN_H - UI_CONTENT_H) / 2)
+#define MQTT_AUTH_MS (1 * 60 * 1000)
+
+// 错误：模块内部过度封装——只有"判空 + 一行取值 + return"的纯转发层，且仅一处调用
+static uiWarnCtx *warnGetCtx(lv_obj_t *warn)
+{
+    if (NULL == warn)
+    {
+        return NULL;
+    }
+    return (uiWarnCtx *)lv_obj_get_user_data(warn);
+}
+
+// 错误：为对称好看而造的同义转发（既无校验也无转换，调用处写原 API 更直接）
+static int32_t getObjWidth(lv_obj_t *obj)
+{
+    return lv_obj_get_width(obj);
+}
+```
+
+```text
+// 错误：为"整批有效"的错觉先暂存全量、解析完再统一写回——多一份空间 + 多一次遍历，且并未原子
+int sta[CHANNEL_MAX] = {0};            // 暂存状态
+char given[CHANNEL_MAX] = {0};         // 还得再来一个数组区分"本批是否给出"
+for (int i = 0; i < count; ++i)
+{
+    ...
+    sta[index] = used;                 // 先存着，不生效
+    given[index] = 1;
+}
+for (int i = 0; i < CHANNEL_MAX; ++i)  // 解析完再遍历一次写回
+{
+    if (0 == given[i])
+        continue;
+    gChannel[i].sta = sta[i];
+}
+```
+
+```text
+// 错误：原文本解析完就不再使用，却拖到函数末尾才释放（期间白占资源）
+int ret = textToObj(text, &obj);
+if (0 != ret)
+{
+    free(text);
+    logError("解析失败 %d", ret);
+    return -1;
+}
+applyObj(obj, out);    // 与 text 无关的处理
+logInfo("已应用");
+objDelete(obj);
+free(text);            // 最后一次使用在解析处，此处才释放 → 延迟释放
+return 0;
+```
+```text
+// 错误：为同一份数据再分配一块缓冲并整串拷贝（纯中转，无格式/生命周期需求）
+char *text = buildText(obj);
+if (NULL == text)
+{
+    logError("生成失败");
+    return -1;
+}
+char *buf = malloc(strlen(text) + 1);   // 多一次分配
+if (NULL == buf)
+{
+    free(text);
+    return -1;
+}
+strcpy(buf, text);                      // 内容与来源完全相同
+writeFile(file, buf, strlen(buf));
+free(buf);
+free(text);
+return 0;
 ```
 
 ## 个性化扩展
