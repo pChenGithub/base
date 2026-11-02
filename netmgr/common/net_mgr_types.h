@@ -1,21 +1,16 @@
 /**
- * @file net_mgr.h
- * @brief 网络管理服务（netmgr）对外接口
- * @details 统一管理以太网、WiFi（STA/AP）、4G 三类链路：
- *          1) 按配置拉起或关闭链路；
- *          2) 以优先级作为默认路由 metric 下发到内核，实现主备自动切换；
- *          3) 链路状态变化通过回调通知应用；
- *          4) 提供 DNS 下发。
- *          本模块不依赖 base 内其它自研模块，可独立编入宿主工程。
+ * @file net_mgr_types.h
+ * @brief netmgr 公共数据类型：长度常量、链路/状态/事件枚举与配置结构（common 层）
+ * @details 本文件是全模块唯一的对外类型定义处，不依赖任何自研模块与上层；
+ *          sys / linktype / core / api 各层均直接包含本文件。
+ *          宿主工程通常只包含 net_mgr.h，由其间接引入本文件。
  */
-#ifndef __NET_MGR_H__
-#define __NET_MGR_H__
+#ifndef __NET_MGR_TYPES_H__
+#define __NET_MGR_TYPES_H__
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include "net_mgr_err.h"
 
 /** 接口名字符串长度上限（含结束符）；被多处结构体成员与长度校验共用，故具名 */
 #define NETMGR_IF_LEN    16
@@ -64,6 +59,7 @@ typedef struct {
     unsigned char prio;         /**< 当前优先级（0-255，小者优先，等同路由 metric） */
     char ifname[NETMGR_IF_LEN]; /**< 实际接口名，未启用时为空串 */
     char ip[NETMGR_IP_LEN];     /**< 当前 IP，未取得时为空串 */
+    char mask[NETMGR_IP_LEN];   /**< 当前掩码，未取得时为空串 */
     char gate[NETMGR_IP_LEN];   /**< 当前网关，未取得时为空串 */
 } NETMGR_LINK;
 
@@ -87,6 +83,10 @@ typedef struct {
     char ifname[NETMGR_IF_LEN];     /**< 接口名，空则使用 wlan0 */
     char ssid[64];     /**< STA：目标 SSID；AP：热点 SSID */
     char passwd[64];   /**< 密码，空表示开放网络 */
+    int use_dhcp;                   /**< STA：1=DHCP 取址，0=静态配置；AP 模式不使用该字段 */
+    char ip[NETMGR_IP_LEN];         /**< STA 静态 IP（use_dhcp=0 时必填） */
+    char mask[NETMGR_IP_LEN];       /**< STA 静态掩码（use_dhcp=0 时必填） */
+    char gate[NETMGR_IP_LEN];       /**< STA 静态网关（use_dhcp=0 时必填，决定默认路由） */
     char dns[NETMGR_IP_LEN];        /**< DNS 服务器，空则不参与下发 */
     char ap_ip[NETMGR_IP_LEN];      /**< AP 本机 IP，空则使用 192.168.4.1 */
     char ap_mask[NETMGR_IP_LEN];    /**< AP 掩码，空则使用 255.255.255.0 */
@@ -121,73 +121,7 @@ typedef struct {
  */
 typedef int (*netmgr_ev_cb)(NETMGR_EV ev, const NETMGR_LINK* link);
 
-/**
- * @brief 启动网络管理服务，按配置拉起全部启用的链路
- * @param conf 总配置，不可为空；配置内容在函数内复制，调用后外部可释放
- * @param cb   链路状态回调，可为空（不需要通知时）
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_start(const NETMGR_CONF* conf, netmgr_ev_cb cb);
-
-/**
- * @brief 停止网络管理服务，关闭全部链路并删除本模块下发的默认路由
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_stop(void);
-
-/**
- * @brief 运行时修改指定类型链路的优先级
- * @param type 链路类型
- * @param prio 新优先级（0-255，小者优先）
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_prio_set(NETMGR_TYPE type, unsigned char prio);
-
-/**
- * @brief 读取指定类型链路的当前优先级
- * @param type 链路类型
- * @param prio 输出当前优先级，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_prio_get(NETMGR_TYPE type, unsigned char* prio);
-
-/**
- * @brief 查询全部链路的状态快照
- * @param list 输出数组，容量由 *num 传入
- * @param num  入参为数组容量，出参为实际写入条数
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_stat_get(NETMGR_LINK* list, int* num);
-
-/**
- * @brief 重新配置以太网链路（会先关闭再按新配置拉起）
- * @param conf 以太网配置，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_eth_set(const NETMGR_ETH_CONF* conf);
-
-/**
- * @brief 重新配置 WiFi 链路（STA 切换 SSID 或 AP 重载均走此接口）
- * @param conf WiFi 配置，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_wifi_set(const NETMGR_WIFI_CONF* conf);
-
-/**
- * @brief 重新配置 4G 链路
- * @param conf 4G 配置，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_cell_set(const NETMGR_CELL_CONF* conf);
-
-/**
- * @brief 下发 DNS 服务器地址（写入系统 DNS 配置并作用于 AP 模式下的客户端）
- * @param dns 单个 IPv4 地址字符串，为空或空串表示清除已下发的 DNS
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_dns_set(const char* dns);
-
 #ifdef __cplusplus
 }
 #endif
-#endif
+#endif /* __NET_MGR_TYPES_H__ */

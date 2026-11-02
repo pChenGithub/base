@@ -1,14 +1,18 @@
 /**
  * @file net_mgr_cell.c
- * @brief 4G 链路实现：当前支持 ECM/RNDIS/NCM 网卡形态（驱动已生成网卡，走 DHCP）
- * @details PPP 与 QMI 属于拨号形态，需额外进程与 AT/控制通道配合，
- *          本次仅在操作表上预留，未实现时返回明确的配置错误。
+ * @brief netmgr 链路实现层：4G 蜂窝链路实现（ECM 网卡 + DHCP）
+ * @details 模组重新注网后 DHCP 进程可能已退出，刷新时按需重新拉起。
  */
+#include "net_mgr_cell.h"
+
+#include "net_mgr_dhcp.h"
+#include "net_mgr_err.h"
+#include "net_mgr_iface.h"
+#include "net_mgr_link.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "net_mgr_def.h"
 
 /** 4G 链路私有数据 */
 typedef struct {
@@ -31,28 +35,25 @@ const NETMGR_OPS netmgr_cell_ops = {cell_open, cell_close, cell_refresh};
 static int cell_open(NETMGR_CTX* ctx, const void* conf)
 {
     const NETMGR_CELL_CONF* cfg = (const NETMGR_CELL_CONF*)conf; /* 入参配置视图 */
-    const char* const devs[] = {"usb0", "wwan0", "eth1"};         /* 4G 网卡候选接口名，ECM/RNDIS/NCM 常见命名 */
-    NETMGR_CELL_PRIV* priv = NULL;                                /* 私有数据 */
-    int ret = 0;                                                  /* 子步骤返回值 */
-    int dev_num = (int)(sizeof(devs) / sizeof(devs[0]));          /* 候选接口数量 */
+    const char* const devs[] = {"usb0", "wwan0", "eth1"};        /* 4G 网卡候选接口名，ECM/RNDIS/NCM 常见命名 */
+    NETMGR_CELL_PRIV* priv = NULL;                               /* 私有数据 */
+    int ret = 0;                                                 /* 子步骤返回值 */
+    int dev_num = (int)(sizeof(devs) / sizeof(devs[0]));         /* 候选接口数量 */
 
     if (NULL == ctx || NULL == cfg)
     {
-        NETMGR_ERR("入参非法");
         return -NETMGRERR_PARAM;
     }
 
     /* 第 1 步：先校验接入方式，未实现的方式在分配资源前拒绝 */
     if (NETMGR_CELL_ECM != cfg->mode)
     {
-        NETMGR_ERR("暂不支持的 4G 接入方式, mode=%d", (int)cfg->mode);
         return -NETMGRERR_CONF;
     }
 
     priv = (NETMGR_CELL_PRIV*)calloc(1, sizeof(NETMGR_CELL_PRIV));
     if (NULL == priv)
     {
-        NETMGR_ERR("申请 4G 链路上下文失败");
         return -NETMGRERR_MEM;
     }
     memcpy(&priv->conf, cfg, sizeof(priv->conf));
@@ -60,34 +61,30 @@ static int cell_open(NETMGR_CTX* ctx, const void* conf)
     /* 第 2 步：确定接口名，未指定时按候选列表自动探测 */
     if ('\0' == priv->conf.ifname[0])
     {
-        ret = netmgr_dev_find(devs, dev_num, priv->conf.ifname,
-                              (int)sizeof(priv->conf.ifname));
+        ret = netmgr_iface_find(devs, dev_num, priv->conf.ifname,
+                                (int)sizeof(priv->conf.ifname));
         if (ret < 0)
         {
-            NETMGR_ERR("未探测到 4G 网卡, 候选数量=%d, ret=%d", dev_num, ret);
             free(priv);
             return ret;
         }
     }
-    if (!netmgr_link_exist(priv->conf.ifname))
+    if (!netmgr_iface_exist(priv->conf.ifname))
     {
-        NETMGR_ERR("接口 %s 不存在", priv->conf.ifname);
         free(priv);
         return -NETMGRERR_NOTFOUND;
     }
 
     /* 第 3 步：启用接口并发起 DHCP，地址异步获取 */
-    ret = netmgr_link_enable(priv->conf.ifname, 1);
+    ret = netmgr_iface_enable(priv->conf.ifname, 1);
     if (ret < 0)
     {
-        NETMGR_ERR("启用 %s 失败, ret=%d", priv->conf.ifname, ret);
         free(priv);
         return ret;
     }
     ret = netmgr_dhcp_start(priv->conf.ifname, 0);
     if (ret < 0)
     {
-        NETMGR_ERR("%s 启动 DHCP 失败, ret=%d", priv->conf.ifname, ret);
         free(priv);
         return ret;
     }
@@ -106,26 +103,22 @@ static int cell_open(NETMGR_CTX* ctx, const void* conf)
  */
 static int cell_close(NETMGR_CTX* ctx)
 {
-    int ret = 0; /* 停止 DHCP 的返回值 */
+    int ret = 0; /* 停止 DHCP 的返回值，负值为错误码 */
 
     if (NULL == ctx)
     {
-        NETMGR_ERR("入参 ctx 为空");
         return -NETMGRERR_PARAM;
     }
 
+    /* 停止取址失败不阻断资源释放，错误码在末尾上抛 */
     if ('\0' != ctx->ifname[0])
-    {
         ret = netmgr_dhcp_stop(ctx->ifname);
-        if (ret < 0)
-            NETMGR_ERR("停止 %s 的 DHCP 失败, ret=%d", ctx->ifname, ret);
-    }
 
     free(ctx->priv);
     ctx->priv = NULL;
     ctx->state = NETMGR_ST_DOWN;
     ctx->route_on = 0;
-    return 0;
+    return ret;
 }
 
 /**
@@ -139,7 +132,6 @@ static int cell_refresh(NETMGR_CTX* ctx)
 
     if (NULL == ctx || NULL == ctx->priv)
     {
-        NETMGR_ERR("链路上下文未初始化");
         return -NETMGRERR_PARAM;
     }
 
@@ -152,7 +144,7 @@ static int cell_refresh(NETMGR_CTX* ctx)
     {
         ret = netmgr_dhcp_start(ctx->ifname, 0);
         if (ret < 0)
-            NETMGR_ERR("%s 重新拉起 DHCP 失败, ret=%d", ctx->ifname, ret);
+            return ret;
     }
     return 0;
 }

@@ -1,11 +1,16 @@
 /**
  * @file net_mgr_err.h
- * @brief netmgr 网络管理服务的错误码定义
+ * @brief netmgr 公共错误码定义（common 层，全模块与宿主工程共用）
  * @details 编码从 200 起，避开 netopt 模块已使用的 0~110 区间；
- *          所有对外接口出错时返回对应错误码的负值。
+ *          所有接口出错时返回对应错误码的负值，模块内部不打印日志，
+ *          日志由业务程序按返回的错误码自行打印。
  */
 #ifndef __NET_MGR_ERR_H__
 #define __NET_MGR_ERR_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /** 入参非法（空指针、越界值、长度不足） */
 #define NETMGRERR_PARAM     200
@@ -38,4 +43,7 @@
 /** 动态内存申请失败 */
 #define NETMGRERR_MEM       214
 
+#ifdef __cplusplus
+}
 #endif
+#endif /* __NET_MGR_ERR_H__ */

@@ -1,9 +1,18 @@
 /**
  * @file net_mgr_wifi.c
- * @brief WiFi 链路实现：STA 模式连接外部热点，AP 模式发射热点并分配地址
- * @details 直接与 wpa_supplicant 的 unix 控制接口通信（CTRL-REQ/CTRL-RSP 最小协议），
- *          不引用 base 内其它模块的 wpa 封装；AP 模式通过 hostapd + udhcpd 提供接入与 DNS。
+ * @brief netmgr 链路实现层：WiFi 链路实现（STA 连热点 / AP 发射热点）
+ * @details 不引用 base 内其它模块的 wpa 封装，控制面只走 wpa_supplicant 的 unix socket；
+ *          AP 模式进程与配置由本层独占管理，失败路径统一回收进程与私有数据。
  */
+#include "net_mgr_wifi.h"
+
+#include "net_mgr_dhcp.h"
+#include "net_mgr_err.h"
+#include "net_mgr_iface.h"
+#include "net_mgr_link.h"
+#include "net_mgr_proc.h"
+#include "net_mgr_util.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +22,24 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include "net_mgr_def.h"
-
+/** 默认 WiFi 接口名 */
+#define NETMGR_DEV_WIFI     "wlan0"
+/** wpa_supplicant 控制接口目录 */
+#define NETMGR_WPA_DIR      "/var/run/wpa_supplicant"
+/** wpa_supplicant 启动配置文件路径 */
+#define NETMGR_WPA_CONF     "/tmp/netmgr_wpa.conf"
+/** hostapd 启动配置文件路径 */
+#define NETMGR_AP_CONF      "/tmp/netmgr_ap.conf"
+/** AP 模式 DHCP 服务配置文件路径 */
+#define NETMGR_UDHCP_CONF   "/tmp/netmgr_dhcpd.conf"
+/** AP 模式默认本机地址 */
+#define NETMGR_AP_IP        "192.168.4.1"
+/** AP 模式默认掩码 */
+#define NETMGR_AP_MASK      "255.255.255.0"
+/** AP 模式默认分配起始地址 */
+#define NETMGR_AP_START     "192.168.4.100"
+/** AP 模式默认分配结束地址 */
+#define NETMGR_AP_END       "192.168.4.200"
 /** 控制接口轮询间隔（微秒） */
 #define WPA_POLL_US    100000
 /** 控制接口就绪等待轮询次数，共 2 秒 */
@@ -54,13 +79,11 @@ static int wpa_open(NETMGR_WIFI_PRIV* priv)
 {
     struct sockaddr_un addr = {0}; /* 控制接口地址 */
     struct timeval tv = {0};       /* 收发超时 */
-    char path[108] = {0}; /* 控制接口路径，长度与 sun_path 对齐避免截断 */
-    int fd = -1;             /* 控制 socket */
-    int err = 0;             /* 失败时的 errno 快照 */
+    char path[108] = {0};          /* 控制接口路径，长度与 sun_path 对齐避免截断 */
+    int fd = -1;                   /* 控制 socket */
 
     if (NULL == priv)
     {
-        NETMGR_ERR("入参 priv 为空");
         return -NETMGRERR_PARAM;
     }
     if (priv->sock >= 0)
@@ -69,14 +92,12 @@ static int wpa_open(NETMGR_WIFI_PRIV* priv)
     if (snprintf(path, sizeof(path), "%s/%s", NETMGR_WPA_DIR, priv->conf.ifname) >=
         (int)sizeof(path))
     {
-        NETMGR_ERR("控制接口路径超长, ifname=%s", priv->conf.ifname);
         return -NETMGRERR_BUFF;
     }
 
     fd = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (fd < 0)
     {
-        NETMGR_ERR("创建控制 socket 失败, errno=%d", errno);
         return -NETMGRERR_SOCKET;
     }
 
@@ -84,9 +105,7 @@ static int wpa_open(NETMGR_WIFI_PRIV* priv)
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
     if (0 != connect(fd, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
-        err = errno;
         close(fd);
-        NETMGR_ERR("连接 %s 失败, errno=%d", path, err);
         return -NETMGRERR_WPA;
     }
 
@@ -95,7 +114,11 @@ static int wpa_open(NETMGR_WIFI_PRIV* priv)
     tv.tv_usec = 0;
     if (0 != setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) ||
         0 != setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)))
-        NETMGR_ERR("%s 设置超时失败, errno=%d", path, errno);
+    {
+        /* 超时设置失败会让控制通道阻塞，按异常关闭并返回错误码 */
+        close(fd);
+        return -NETMGRERR_SOCKET;
+    }
 
     priv->sock = fd;
     return 0;
@@ -124,32 +147,28 @@ static void wpa_close(NETMGR_WIFI_PRIV* priv)
 static int wpa_cmd(NETMGR_WIFI_PRIV* priv, const char* cmd, char* out, int len)
 {
     char buf[1024] = {0}; /* 回复原始缓冲 */
-    char* data = NULL;        /* 回复正文起点 */
-    ssize_t n = 0;            /* 收发字节数 */
+    char* data = NULL;    /* 回复正文起点 */
+    ssize_t n = 0;        /* 收发字节数 */
 
     if (NULL == priv || NULL == cmd || priv->sock < 0)
     {
-        NETMGR_ERR("控制通道未就绪, cmd=%s", (NULL == cmd) ? "" : cmd);
         return -NETMGRERR_WPA;
     }
 
     if (0 > send(priv->sock, cmd, strlen(cmd), 0))
     {
-        NETMGR_ERR("发送命令失败, cmd=%s, errno=%d", cmd, errno);
         return -NETMGRERR_WPA;
     }
 
     n = recv(priv->sock, buf, sizeof(buf) - 1, 0);
     if (n <= 0)
     {
-        NETMGR_ERR("接收命令回复失败, cmd=%s, errno=%d", cmd, errno);
         return -NETMGRERR_WPA;
     }
 
     /* 回复格式为 CTRL-RSP-<序号>-<长度>\n<正文>，正文取首个换行之后 */
     if (0 != strncmp(buf, "CTRL-RSP", WPA_RSP_LEN))
     {
-        NETMGR_ERR("回复格式异常, cmd=%s, head=%.32s", cmd, buf);
         return -NETMGRERR_WPA;
     }
     data = strchr(buf, '\n');
@@ -157,7 +176,6 @@ static int wpa_cmd(NETMGR_WIFI_PRIV* priv, const char* cmd, char* out, int len)
 
     if (0 == strncmp(data, "FAIL", WPA_FAIL_LEN))
     {
-        NETMGR_ERR("命令执行失败, cmd=%s, rsp=%.64s", cmd, data);
         return -NETMGRERR_WPA;
     }
 
@@ -177,17 +195,19 @@ static int wpa_conf_write(void)
     fp = fopen(NETMGR_WPA_CONF, "w");
     if (NULL == fp)
     {
-        NETMGR_ERR("打开 %s 失败, errno=%d", NETMGR_WPA_CONF, errno);
         return -NETMGRERR_FILE;
     }
 
     if (fprintf(fp, "ctrl_interface=%s\nupdate_config=1\ncountry=CN\n", NETMGR_WPA_DIR) < 0)
     {
-        NETMGR_ERR("写入 %s 失败, errno=%d", NETMGR_WPA_CONF, errno);
         fclose(fp);
         return -NETMGRERR_FILE;
     }
-    fflush(fp);
+    if (0 != fflush(fp))
+    {
+        fclose(fp);
+        return -NETMGRERR_FILE;
+    }
     fclose(fp);
     return 0;
 }
@@ -200,16 +220,14 @@ static int wpa_conf_write(void)
 static int wpa_wait(const char* ifname)
 {
     char path[108] = {0}; /* 控制接口路径，长度与 sun_path 对齐 */
-    int i = 0;               /* 轮询次数，从 0 开始 */
+    int i = 0;            /* 轮询次数，从 0 开始 */
 
     if (NULL == ifname)
     {
-        NETMGR_ERR("入参 ifname 为空");
         return -NETMGRERR_PARAM;
     }
     if (snprintf(path, sizeof(path), "%s/%s", NETMGR_WPA_DIR, ifname) >= (int)sizeof(path))
     {
-        NETMGR_ERR("控制接口路径超长, ifname=%s", ifname);
         return -NETMGRERR_BUFF;
     }
 
@@ -220,7 +238,6 @@ static int wpa_wait(const char* ifname)
         usleep(WPA_POLL_US);
     }
 
-    NETMGR_ERR("等待 %s 就绪超时", path);
     return -NETMGRERR_TIMEOUT;
 }
 
@@ -232,11 +249,10 @@ static int wpa_wait(const char* ifname)
 static int wpa_wait_conn(NETMGR_WIFI_PRIV* priv)
 {
     char out[1024] = {0}; /* STATUS 回复 */
-    int i = 0;                /* 轮询次数，从 0 开始 */
+    int i = 0;            /* 轮询次数，从 0 开始 */
 
     if (NULL == priv)
     {
-        NETMGR_ERR("入参 priv 为空");
         return -NETMGRERR_PARAM;
     }
 
@@ -245,11 +261,12 @@ static int wpa_wait_conn(NETMGR_WIFI_PRIV* priv)
         out[0] = '\0';
         if (0 == wpa_cmd(priv, "STATUS", out, (int)sizeof(out)) &&
             NULL != strstr(out, "wpa_state=COMPLETED"))
+        {
             return 0;
+        }
         usleep(WPA_POLL_US);
     }
 
-    NETMGR_ERR("%s 连接热点超时", priv->conf.ifname);
     return -NETMGRERR_TIMEOUT;
 }
 
@@ -261,14 +278,20 @@ static int wpa_wait_conn(NETMGR_WIFI_PRIV* priv)
  */
 static int sta_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
 {
-    char id[16] = {0};           /* wpa 网络配置编号 */
-    char cmd[128] = {0};    /* 拼接后的控制命令 */
-    int ret = 0;                 /* 子步骤返回值 */
+    char id[16] = {0};   /* wpa 网络配置编号 */
+    char cmd[128] = {0}; /* 拼接后的控制命令 */
+    int ret = 0;         /* 子步骤返回值 */
 
     /* 第 1 步：保证 wpa_supplicant 由本模块独占启动，避免沿用未知配置 */
-    (void)netmgr_proc_kill("hostapd");
-    (void)netmgr_proc_kill("udhcpd");
-    (void)netmgr_proc_kill("wpa_supplicant");
+    ret = netmgr_proc_kill("hostapd");
+    if (ret < 0)
+        return ret;
+    ret = netmgr_proc_kill("udhcpd");
+    if (ret < 0)
+        return ret;
+    ret = netmgr_proc_kill("wpa_supplicant");
+    if (ret < 0)
+        return ret;
 
     ret = wpa_conf_write();
     if (ret < 0)
@@ -277,7 +300,6 @@ static int sta_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
     ret = netmgr_proc_exec("wpa_supplicant -B -i %s -c %s", priv->conf.ifname, NETMGR_WPA_CONF);
     if (ret < 0)
     {
-        NETMGR_ERR("%s 启动 wpa_supplicant 失败, ret=%d", priv->conf.ifname, ret);
         return -NETMGRERR_PROC;
     }
 
@@ -289,7 +311,8 @@ static int sta_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
     if (ret < 0)
         return ret;
 
-    /* 第 3 步：重建网络配置，编号由 wpa 分配 */
+    /* 第 3 步：重建网络配置，编号由 wpa 分配；
+       清理旧配置属幂等操作，无旧网络时 wpa 返回 FAIL，此处不作为异常 */
     (void)wpa_cmd(priv, "REMOVE_NETWORK all", NULL, 0);
     ret = wpa_cmd(priv, "ADD_NETWORK", id, (int)sizeof(id));
     if (ret < 0)
@@ -325,15 +348,14 @@ static int sta_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
     if (ret < 0)
         return ret;
 
-    /* 第 4 步：等待关联完成，再由 DHCP 取址 */
+    /* 第 4 步：等待关联完成 */
     ret = wpa_wait_conn(priv);
     if (ret < 0)
         return ret;
 
-    ret = netmgr_link_enable(priv->conf.ifname, 1);
+    ret = netmgr_iface_enable(priv->conf.ifname, 1);
     if (ret < 0)
     {
-        NETMGR_ERR("启用 %s 失败, ret=%d", priv->conf.ifname, ret);
         return ret;
     }
 
@@ -341,10 +363,23 @@ static int sta_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
     snprintf(ctx->dns, sizeof(ctx->dns), "%s", priv->conf.dns);
     ctx->priv = priv;
 
+    /* 第 5 步：按取址方式配置，DHCP 异步取址，静态地址在此同步完成 */
+    if (!priv->conf.use_dhcp)
+    {
+        ret = netmgr_iface_setip(priv->conf.ifname, priv->conf.ip);
+        if (ret < 0)
+            return ret;
+        ret = netmgr_iface_setmask(priv->conf.ifname, priv->conf.mask);
+        if (ret < 0)
+            return ret;
+        snprintf(ctx->gate, sizeof(ctx->gate), "%s", priv->conf.gate);
+        ctx->state = NETMGR_ST_READY;
+        return 0;
+    }
+
     ret = netmgr_dhcp_start(priv->conf.ifname, 0);
     if (ret < 0)
     {
-        NETMGR_ERR("%s 启动 DHCP 失败, ret=%d", priv->conf.ifname, ret);
         return ret;
     }
     return 0;
@@ -362,20 +397,28 @@ static int ap_conf_write(const NETMGR_WIFI_CONF* conf)
     fp = fopen(NETMGR_AP_CONF, "w");
     if (NULL == fp)
     {
-        NETMGR_ERR("打开 %s 失败, errno=%d", NETMGR_AP_CONF, errno);
         return -NETMGRERR_FILE;
     }
 
     /* 基础参数：接口、驱动、信道，密码为空时按开放网络输出 */
-    fprintf(fp, "interface=%s\ndriver=nl80211\nssid=%s\nhw_mode=g\nchannel=6\n",
-            conf->ifname, conf->ssid);
+    if (fprintf(fp, "interface=%s\ndriver=nl80211\nssid=%s\nhw_mode=g\nchannel=6\n",
+                conf->ifname, conf->ssid) < 0)
+    {
+        fclose(fp);
+        return -NETMGRERR_FILE;
+    }
     if ('\0' != conf->passwd[0])
-        fprintf(fp, "wpa=2\nwpa_passphrase=%s\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n",
-                conf->passwd);
+    {
+        if (fprintf(fp, "wpa=2\nwpa_passphrase=%s\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n",
+                    conf->passwd) < 0)
+        {
+            fclose(fp);
+            return -NETMGRERR_FILE;
+        }
+    }
 
     if (0 != fflush(fp))
     {
-        NETMGR_ERR("写入 %s 失败, errno=%d", NETMGR_AP_CONF, errno);
         fclose(fp);
         return -NETMGRERR_FILE;
     }
@@ -395,19 +438,27 @@ static int ap_dhcp_conf(const NETMGR_WIFI_CONF* conf)
     fp = fopen(NETMGR_UDHCP_CONF, "w");
     if (NULL == fp)
     {
-        NETMGR_ERR("打开 %s 失败, errno=%d", NETMGR_UDHCP_CONF, errno);
         return -NETMGRERR_FILE;
     }
 
-    fprintf(fp, "start %s\nend %s\ninterface %s\nopt router %s\nopt subnet %s\n",
-            conf->ap_start, conf->ap_end, conf->ifname, conf->ap_ip, conf->ap_mask);
+    if (fprintf(fp, "start %s\nend %s\ninterface %s\nopt router %s\nopt subnet %s\n",
+                conf->ap_start, conf->ap_end, conf->ifname, conf->ap_ip, conf->ap_mask) < 0)
+    {
+        fclose(fp);
+        return -NETMGRERR_FILE;
+    }
     /* DNS 仅在配置了服务器时下发，未配置则由客户端沿用自身设置 */
     if ('\0' != conf->dns[0])
-        fprintf(fp, "opt dns %s\n", conf->dns);
+    {
+        if (fprintf(fp, "opt dns %s\n", conf->dns) < 0)
+        {
+            fclose(fp);
+            return -NETMGRERR_FILE;
+        }
+    }
 
     if (0 != fflush(fp))
     {
-        NETMGR_ERR("写入 %s 失败, errno=%d", NETMGR_UDHCP_CONF, errno);
         fclose(fp);
         return -NETMGRERR_FILE;
     }
@@ -426,9 +477,15 @@ static int ap_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
     int ret = 0; /* 子步骤返回值 */
 
     /* 第 1 步：AP 与 STA 互斥，先停掉 STA 相关进程 */
-    (void)netmgr_proc_kill("wpa_supplicant");
-    (void)netmgr_proc_kill("udhcpd");
-    (void)netmgr_proc_kill("hostapd");
+    ret = netmgr_proc_kill("wpa_supplicant");
+    if (ret < 0)
+        return ret;
+    ret = netmgr_proc_kill("udhcpd");
+    if (ret < 0)
+        return ret;
+    ret = netmgr_proc_kill("hostapd");
+    if (ret < 0)
+        return ret;
 
     ret = ap_conf_write(&priv->conf);
     if (ret < 0)
@@ -437,18 +494,17 @@ static int ap_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
     ret = netmgr_proc_exec("hostapd -B %s", NETMGR_AP_CONF);
     if (ret < 0)
     {
-        NETMGR_ERR("%s 启动 hostapd 失败, ret=%d", priv->conf.ifname, ret);
         return -NETMGRERR_PROC;
     }
 
     /* 第 2 步：配置热点本机地址，AP 自身不承担默认路由 */
-    ret = netmgr_link_enable(priv->conf.ifname, 1);
+    ret = netmgr_iface_enable(priv->conf.ifname, 1);
     if (ret < 0)
         return ret;
-    ret = netmgr_link_setip(priv->conf.ifname, priv->conf.ap_ip);
+    ret = netmgr_iface_setip(priv->conf.ifname, priv->conf.ap_ip);
     if (ret < 0)
         return ret;
-    ret = netmgr_link_setmask(priv->conf.ifname, priv->conf.ap_mask);
+    ret = netmgr_iface_setmask(priv->conf.ifname, priv->conf.ap_mask);
     if (ret < 0)
         return ret;
 
@@ -459,7 +515,6 @@ static int ap_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
     ret = netmgr_proc_exec("udhcpd %s", NETMGR_UDHCP_CONF);
     if (ret < 0)
     {
-        NETMGR_ERR("%s 启动 udhcpd 失败, ret=%d", priv->conf.ifname, ret);
         return -NETMGRERR_PROC;
     }
 
@@ -486,24 +541,29 @@ static int wifi_open(NETMGR_CTX* ctx, const void* conf)
 
     if (NULL == ctx || NULL == cfg)
     {
-        NETMGR_ERR("入参非法");
         return -NETMGRERR_PARAM;
     }
     if ('\0' == cfg->ssid[0])
     {
-        NETMGR_ERR("SSID 未配置");
         return -NETMGRERR_CONF;
     }
     if ('\0' != cfg->passwd[0] && (int)strlen(cfg->passwd) < WPA_PSK_MIN)
     {
-        NETMGR_ERR("密码长度不足, 至少 %d 位", WPA_PSK_MIN);
         return -NETMGRERR_CONF;
+    }
+    /* STA 静态模式：地址三要素缺一不可，否则无法取址或无法参与默认路由 */
+    if (NETMGR_MODE_STA == cfg->mode && !cfg->use_dhcp)
+    {
+        if (!netmgr_ip_valid(cfg->ip) || !netmgr_ip_valid(cfg->mask) ||
+            !netmgr_ip_valid(cfg->gate))
+        {
+            return -NETMGRERR_CONF;
+        }
     }
 
     priv = (NETMGR_WIFI_PRIV*)calloc(1, sizeof(NETMGR_WIFI_PRIV));
     if (NULL == priv)
     {
-        NETMGR_ERR("申请 WiFi 链路上下文失败");
         return -NETMGRERR_MEM;
     }
     memcpy(&priv->conf, cfg, sizeof(priv->conf));
@@ -521,15 +581,13 @@ static int wifi_open(NETMGR_CTX* ctx, const void* conf)
     if ('\0' == priv->conf.ap_end[0])
         snprintf(priv->conf.ap_end, sizeof(priv->conf.ap_end), "%s", NETMGR_AP_END);
 
-    if (!netmgr_link_exist(priv->conf.ifname))
+    if (!netmgr_iface_exist(priv->conf.ifname))
     {
-        NETMGR_ERR("接口 %s 不存在", priv->conf.ifname);
         free(priv);
         return -NETMGRERR_NOTFOUND;
     }
     if (!netmgr_ip_valid(priv->conf.ap_ip) || !netmgr_ip_valid(priv->conf.ap_mask))
     {
-        NETMGR_ERR("AP 地址配置非法, ip=%s, mask=%s", priv->conf.ap_ip, priv->conf.ap_mask);
         free(priv);
         return -NETMGRERR_CONF;
     }
@@ -542,11 +600,14 @@ static int wifi_open(NETMGR_CTX* ctx, const void* conf)
 
     if (ret < 0)
     {
+        /* 清理过程中的次生失败不覆盖主错误码；priv 可能已挂到上下文，需一并复位 */
         wpa_close(priv);
-        netmgr_dhcp_stop(priv->conf.ifname);
+        (void)netmgr_dhcp_stop(priv->conf.ifname);
         (void)netmgr_proc_kill("hostapd");
         (void)netmgr_proc_kill("udhcpd");
         free(priv);
+        ctx->priv = NULL;
+        ctx->state = NETMGR_ST_DOWN;
         return ret;
     }
     return 0;
@@ -560,27 +621,23 @@ static int wifi_open(NETMGR_CTX* ctx, const void* conf)
 static int wifi_close(NETMGR_CTX* ctx)
 {
     NETMGR_WIFI_PRIV* priv = NULL; /* 私有数据 */
-    int ret = 0;                   /* 子步骤返回值 */
+    int ret = 0;                   /* 停止 DHCP 的返回值 */
 
     if (NULL == ctx)
     {
-        NETMGR_ERR("入参 ctx 为空");
         return -NETMGRERR_PARAM;
     }
 
     priv = (NETMGR_WIFI_PRIV*)ctx->priv;
+    /* 停止取址失败不阻断资源释放，错误码在末尾上抛 */
     if ('\0' != ctx->ifname[0])
-    {
         ret = netmgr_dhcp_stop(ctx->ifname);
-        if (ret < 0)
-            NETMGR_ERR("停止 %s 的 DHCP 失败, ret=%d", ctx->ifname, ret);
-    }
 
     /* 先断开控制通道再结束进程，顺序保证控制命令能正常下发 */
     if (NULL != priv)
     {
         if (priv->sock >= 0)
-            (void)wpa_cmd(priv, "DISCONNECT", NULL, 0);
+            (void)wpa_cmd((NETMGR_WIFI_PRIV*)priv, "DISCONNECT", NULL, 0);
         wpa_close(priv);
     }
     (void)netmgr_proc_kill("udhcpd");
@@ -591,7 +648,7 @@ static int wifi_close(NETMGR_CTX* ctx)
     ctx->priv = NULL;
     ctx->state = NETMGR_ST_DOWN;
     ctx->route_on = 0;
-    return 0;
+    return ret;
 }
 
 /**
@@ -606,7 +663,6 @@ static int wifi_refresh(NETMGR_CTX* ctx)
 
     if (NULL == ctx || NULL == ctx->priv)
     {
-        NETMGR_ERR("链路上下文未初始化");
         return -NETMGRERR_PARAM;
     }
     priv = (NETMGR_WIFI_PRIV*)ctx->priv;
@@ -615,20 +671,30 @@ static int wifi_refresh(NETMGR_CTX* ctx)
     if (NETMGR_MODE_AP == priv->conf.mode)
     {
         ctx->ip[0] = '\0';
+        ctx->mask[0] = '\0';
         ctx->gate[0] = '\0';
-        if (!netmgr_proc_exist("hostapd") || !netmgr_link_up(priv->conf.ifname))
+        if (!netmgr_proc_exist("hostapd") || !netmgr_iface_up(priv->conf.ifname))
         {
             ctx->state = NETMGR_ST_DOWN;
             return 0;
         }
-        ret = netmgr_link_ip(priv->conf.ifname, ctx->ip, (int)sizeof(ctx->ip));
+        ret = netmgr_iface_ip(priv->conf.ifname, ctx->ip, (int)sizeof(ctx->ip));
+        if (ret < 0)
+            return ret;
+        ret = netmgr_iface_mask(priv->conf.ifname, ctx->mask, (int)sizeof(ctx->mask));
         if (ret < 0)
             return ret;
         ctx->state = ('\0' != ctx->ip[0]) ? NETMGR_ST_READY : NETMGR_ST_DOWN;
         return 0;
     }
 
-    /* STA 模式：连通、地址、网关齐全才算就绪 */
+    /* STA 静态模式：只看连通与地址在位，网关取配置值 */
+    if (!priv->conf.use_dhcp)
+    {
+        return netmgr_link_ready_static(ctx, priv->conf.gate);
+    }
+
+    /* STA DHCP 模式：连通、地址、网关齐全才算就绪，取址进程退出后重拉 */
     ret = netmgr_link_ready(ctx);
     if (ret < 0)
         return ret;
@@ -636,7 +702,7 @@ static int wifi_refresh(NETMGR_CTX* ctx)
     {
         ret = netmgr_dhcp_start(ctx->ifname, 0);
         if (ret < 0)
-            NETMGR_ERR("%s 重新拉起 DHCP 失败, ret=%d", ctx->ifname, ret);
+            return ret;
     }
     return 0;
 }

@@ -5,21 +5,24 @@
 
 CC ?= gcc
 CFLAGS ?= -std=gnu99 -Wall -Wextra -g -O0
-INC = -I..
+INC = -I../api -I../core -I../linktype -I../sys -I../common
 LIBS = -lpthread
 TARGET = net_demo
 
 SRCS = net_demo.c \
-	../net_mgr.c \
-	../net_mgr_link.c \
-	../net_mgr_proc.c \
-	../net_mgr_dhcp.c \
-	../net_mgr_dns.c \
-	../net_mgr_eth.c \
-	../net_mgr_wifi.c \
-	../net_mgr_cell.c \
-	../net_mgr_route.c \
-	../net_mgr_event.c
+	../api/net_mgr.c \
+	../core/net_mgr_core.c \
+	../linktype/net_mgr_link.c \
+	../linktype/net_mgr_eth.c \
+	../linktype/net_mgr_wifi.c \
+	../linktype/net_mgr_cell.c \
+	../sys/net_mgr_iface.c \
+	../sys/net_mgr_route.c \
+	../sys/net_mgr_dhcp.c \
+	../sys/net_mgr_proc.c \
+	../sys/net_mgr_dns.c \
+	../sys/net_mgr_event.c \
+	../common/net_mgr_util.c
 
 all: $(TARGET)
 

@@ -2,18 +2,16 @@
  * @file net_demo.c
  * @brief netmgr 示例程序：演示以太网、WiFi（STA/AP）、4G 的配置与优先级主备
  *
- * 用法：
- *   net_demo eth                         以太网 DHCP
- *   net_demo eth-st <ip> <mask> <gw>     以太网静态地址
- *   net_demo wifi-sta <ssid> <passwd>    WiFi 站点模式
- *   net_demo wifi-ap <ssid> <passwd> <dns> WiFi 热点模式（dns 下发给客户端）
- *   net_demo cell                        4G ECM 网卡 + DHCP
- *   net_demo all <ssid> <passwd>         以太网 + WiFi STA + 4G 三条并存
+ * 用法：直接编译运行，配置由文件内的 g_demoConf 给出，不解析命令行参数。
+ *      换场景时改 g_demoConf 即可：
+ *      - 以太网静态地址：eth.use_dhcp = 0，并填 eth.ip / eth.mask / eth.gate
+ *      - WiFi 静态地址： wifi.use_dhcp = 0，并填 wifi.ip / wifi.mask / wifi.gate
+ *      - WiFi 热点模式： wifi.mode = NETMGR_MODE_AP，并填 wifi.ssid / wifi.passwd
+ *      - 关闭某条链路： 对应成员的 enable 置 0
  *
  * 优先级约定：以太网 10、WiFi 20、4G 30，数值越小越优先（等同路由 metric）。
  */
 #include <stdio.h>
-#include <string.h>
 #include <unistd.h>
 
 #include "net_mgr.h"
@@ -22,6 +20,55 @@
 #define DEMO_PRINT_S 5
 /** 状态打印轮数 */
 #define DEMO_PRINT_N 12
+
+/**
+ * 示例总配置（文件级只读配置，示例程序的唯一配置来源）
+ * 用途：作为 netmgr_start 的入参，演示三条链路的启用方式与优先级主备
+ * 单位/范围：prio 取 0~255（小者优先）；use_dhcp 取 0/1；地址均为点分十进制字符串
+ * 默认值依据：三条链路全部启用并按 DHCP/自动探测取址，优先级 10/20/30；
+ *             接口名留空表示使用各链路默认接口（eth0、wlan0、自动探测 usb0/wwan0/eth1）
+ * 写入方/读取方：仅 main 读取，运行期不修改（static const）
+ * 生命周期：仅内存态，随进程存在，不持久化
+ */
+static const NETMGR_CONF g_demoConf = {
+    .eth = {
+        .enable = 1,                   /* 启用以太网 */
+        .prio = 10,                    /* 优先级 10：三链路中最优 */
+        .use_dhcp = 1,                 /* 1=DHCP 取址 */
+        .ifname = "",                  /* 空=使用默认 eth0 */
+        .ip = "",                      /* 静态 IP，DHCP 取址时不生效 */
+        .mask = "",                    /* 静态掩码，DHCP 取址时不生效 */
+        .gate = "",                    /* 静态网关，DHCP 取址时不生效 */
+        .dns = "",                     /* 空=不参与 DNS 下发 */
+    },
+    .wifi = {
+        .enable = 1,                   /* 启用 WiFi */
+        .prio = 20,                    /* 优先级 20：次优 */
+        .mode = NETMGR_MODE_STA,       /* STA 模式：连接外部热点 */
+        .ifname = "",                  /* 空=使用默认 wlan0 */
+        .ssid = "your_ssid",           /* 目标热点名称，按实际修改 */
+        .passwd = "your_passwd",       /* 热点密码，空表示开放网络 */
+        .use_dhcp = 1,                 /* 1=DHCP 取址；0=静态，需填 ip/mask/gate */
+        .ip = "",                      /* STA 静态 IP，DHCP 取址时不生效 */
+        .mask = "",                    /* STA 静态掩码，DHCP 取址时不生效 */
+        .gate = "",                    /* STA 静态网关，DHCP 取址时不生效 */
+        .dns = "",                     /* 空=不参与 DNS 下发 */
+        .ap_ip = "",                   /* AP 本机 IP，空=192.168.4.1（仅 AP 模式） */
+        .ap_mask = "",                 /* AP 掩码，空=255.255.255.0（仅 AP 模式） */
+        .ap_start = "",                /* AP 分配起始，空=192.168.4.100（仅 AP 模式） */
+        .ap_end = "",                  /* AP 分配结束，空=192.168.4.200（仅 AP 模式） */
+    },
+    .cell = {
+        .enable = 1,                   /* 启用 4G */
+        .prio = 30,                    /* 优先级 30：最低 */
+        .mode = NETMGR_CELL_ECM,       /* ECM 网卡形态，走 DHCP */
+        .ifname = "",                  /* 空=自动探测 usb0/wwan0/eth1 */
+        .apn = "",                     /* APN，仅 PPP 模式使用 */
+        .user = "",                    /* 拨号用户名，仅 PPP 模式使用 */
+        .passwd = "",                  /* 拨号密码，仅 PPP 模式使用 */
+        .dns = "",                     /* 空=不参与 DNS 下发 */
+    },
+};
 
 /**
  * @brief 链路类型转可读名称
@@ -46,7 +93,7 @@ static const char* demo_type_name(NETMGR_TYPE type)
 /**
  * @brief 事件类型转可读名称
  * @param ev 事件类型
- * @return 常量字符串，未知类型返回 UNKNOWN
+ * @return 常量字符串，未知事件返回 UNKNOWN
  */
 static const char* demo_ev_name(NETMGR_EV ev)
 {
@@ -94,9 +141,9 @@ static int demo_event(NETMGR_EV ev, const NETMGR_LINK* link)
     if (NULL == link)
         return 0;
 
-    printf("[event] %-4s %-6s ifname=%-6s ip=%-15s gate=%-15s prio=%u\r\n",
+    printf("[event] %-4s %-6s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u\r\n",
            demo_ev_name(ev), demo_type_name(link->type), link->ifname,
-           link->ip, link->gate, (unsigned int)link->prio);
+           link->ip, link->mask, link->gate, (unsigned int)link->prio);
     return 0;
 }
 
@@ -112,131 +159,28 @@ static void demo_dump(const NETMGR_LINK* list, int num)
     printf("-------- 链路状态 --------\r\n");
     for (i = 0; i < num; ++i)
     {
-        printf("%-6s %-6s ifname=%-6s ip=%-15s gate=%-15s prio=%u\r\n",
+        printf("%-6s %-6s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u\r\n",
                demo_type_name(list[i].type), demo_state_name(list[i].state),
-               list[i].ifname, list[i].ip, list[i].gate, (unsigned int)list[i].prio);
+               list[i].ifname, list[i].ip, list[i].mask,
+               list[i].gate, (unsigned int)list[i].prio);
     }
 }
 
 /**
- * @brief 打印用法说明
- * @param name 程序名
+ * @brief 示例程序入口：按 g_demoConf 启动网络管理并周期打印链路状态
+ * @return 0 正常结束；1 启动或查询失败
  */
-static void demo_usage(const char* name)
+int main(void)
 {
-    printf("用法:\r\n");
-    printf("  %s eth\r\n", name);
-    printf("  %s eth-st <ip> <mask> <gw>\r\n", name);
-    printf("  %s wifi-sta <ssid> <passwd>\r\n", name);
-    printf("  %s wifi-ap <ssid> <passwd> <dns>\r\n", name);
-    printf("  %s cell\r\n", name);
-    printf("  %s all <ssid> <passwd>\r\n", name);
-}
+    NETMGR_LINK list[NETMGR_TYPE_MAX] = {0}; /* 状态快照数组，长度等于链路类型数 */
+    int num = 0;                             /* 快照条数，入参为容量、出参为实际条数 */
+    int ret = 0;                             /* 接口返回值 */
+    int i = 0;                               /* 打印轮次，从 0 开始 */
 
-/**
- * @brief 解析命令行并填充配置
- * @param conf 待填充的总配置，不可为空
- * @param argc 参数个数
- * @param argv 参数数组
- * @return 0 成功；负值表示参数非法
- */
-static int demo_parse(NETMGR_CONF* conf, int argc, char* argv[])
-{
-    const char* scene = NULL; /* 场景名 */
-
-    if (NULL == conf || argc < 2)
-        return -1;
-    scene = argv[1];
-
-    if (0 == strcmp(scene, "eth"))
-    {
-        conf->eth.enable = 1;
-        conf->eth.use_dhcp = 1;
-        return 0;
-    }
-    if (0 == strcmp(scene, "eth-st"))
-    {
-        if (argc < 5)
-            return -1;
-        conf->eth.enable = 1;
-        conf->eth.use_dhcp = 0;
-        snprintf(conf->eth.ip, sizeof(conf->eth.ip), "%s", argv[2]);
-        snprintf(conf->eth.mask, sizeof(conf->eth.mask), "%s", argv[3]);
-        snprintf(conf->eth.gate, sizeof(conf->eth.gate), "%s", argv[4]);
-        return 0;
-    }
-    if (0 == strcmp(scene, "wifi-sta"))
-    {
-        if (argc < 4)
-            return -1;
-        conf->wifi.enable = 1;
-        conf->wifi.mode = NETMGR_MODE_STA;
-        snprintf(conf->wifi.ssid, sizeof(conf->wifi.ssid), "%s", argv[2]);
-        snprintf(conf->wifi.passwd, sizeof(conf->wifi.passwd), "%s", argv[3]);
-        return 0;
-    }
-    if (0 == strcmp(scene, "wifi-ap"))
-    {
-        if (argc < 5)
-            return -1;
-        conf->wifi.enable = 1;
-        conf->wifi.mode = NETMGR_MODE_AP;
-        snprintf(conf->wifi.ssid, sizeof(conf->wifi.ssid), "%s", argv[2]);
-        snprintf(conf->wifi.passwd, sizeof(conf->wifi.passwd), "%s", argv[3]);
-        snprintf(conf->wifi.dns, sizeof(conf->wifi.dns), "%s", argv[4]);
-        return 0;
-    }
-    if (0 == strcmp(scene, "cell"))
-    {
-        conf->cell.enable = 1;
-        conf->cell.mode = NETMGR_CELL_ECM;
-        return 0;
-    }
-    if (0 == strcmp(scene, "all"))
-    {
-        if (argc < 4)
-            return -1;
-        conf->eth.enable = 1;
-        conf->eth.use_dhcp = 1;
-        conf->wifi.enable = 1;
-        conf->wifi.mode = NETMGR_MODE_STA;
-        snprintf(conf->wifi.ssid, sizeof(conf->wifi.ssid), "%s", argv[2]);
-        snprintf(conf->wifi.passwd, sizeof(conf->wifi.passwd), "%s", argv[3]);
-        conf->cell.enable = 1;
-        conf->cell.mode = NETMGR_CELL_ECM;
-        return 0;
-    }
-    return -1;
-}
-
-/**
- * @brief 示例程序入口
- * @param argc 参数个数
- * @param argv 参数数组
- * @return 0 正常结束；1 参数或启动失败
- */
-int main(int argc, char* argv[])
-{
-    NETMGR_CONF conf = {0};                    /* 总配置 */
-    NETMGR_LINK list[NETMGR_TYPE_MAX] = {0};   /* 状态快照数组 */
-    int num = 0;                         /* 快照条数 */
-    int ret = 0;                         /* 接口返回值 */
-    int i = 0;                           /* 打印轮次，从 0 开始 */
-
-    /* 默认优先级：以太网最优，其次 WiFi，最后 4G */
-    conf.eth.prio = 10;
-    conf.wifi.prio = 20;
-    conf.cell.prio = 30;
-
-    if (demo_parse(&conf, argc, argv) < 0)
-    {
-        demo_usage(argv[0]);
-        return 1;
-    }
-
-    ret = netmgr_start(&conf, demo_event);
+    ret = netmgr_start(&g_demoConf, demo_event);
     if (ret < 0)
     {
+        /* 业务程序按错误码自行打印日志 */
         printf("启动网络管理失败, ret=%d\r\n", ret);
         return 1;
     }
@@ -255,6 +199,8 @@ int main(int argc, char* argv[])
         demo_dump(list, num);
     }
 
-    (void)netmgr_stop();
+    ret = netmgr_stop();
+    if (ret < 0)
+        printf("停止网络管理失败, ret=%d\r\n", ret);
     return 0;
 }

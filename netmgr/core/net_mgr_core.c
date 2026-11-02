@@ -1,11 +1,22 @@
 /**
- * @file net_mgr.c
- * @brief 网络管理核心：链路装配、优先级仲裁、默认路由同步与事件分发
+ * @file net_mgr_core.c
+ * @brief netmgr 仲裁层实现：链路装配、优先级仲裁、默认路由同步与事件分发
  * @details 仲裁模型：
  *          1) 周期性（或事件到达时提前）刷新各链路自身状态 DOWN/READY；
  *          2) 就绪链路按其优先级下发默认路由，metric 取优先级值，由内核选路；
  *          3) 就绪链路中优先级最高者标记为 ACTIVE，仅用于状态上报与 DNS 下发。
  */
+#include "net_mgr_core.h"
+
+#include "net_mgr_cell.h"
+#include "net_mgr_dns.h"
+#include "net_mgr_err.h"
+#include "net_mgr_eth.h"
+#include "net_mgr_event.h"
+#include "net_mgr_route.h"
+#include "net_mgr_util.h"
+#include "net_mgr_wifi.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -13,32 +24,34 @@
 #include <time.h>
 #include <pthread.h>
 
-#include "net_mgr_def.h"
-
+/** 链路状态刷新周期（毫秒），netlink 事件到达时提前唤醒 */
+#define NETMGR_TICK_MS  200
 /** 管理线程等待周期（毫秒） */
-#define CORE_TICK_MS  NETMGR_TICK_MS
+#define CORE_TICK_MS    NETMGR_TICK_MS
 /** 毫秒转纳秒的换算系数 */
-#define NS_PER_MS      1000000L
+#define NS_PER_MS       1000000L
 /** 一纳秒进位阈值（10^9） */
-#define CORE_NS_SEC    1000000000L
+#define CORE_NS_SEC     1000000000L
+/** 路由 metric 基准值，叠加优先级后作为最终 metric */
+#define NETMGR_METRIC_BASE  0
 
 /** 管理核心上下文，承载仲裁层全部运行状态 */
 typedef struct {
-    volatile int running;            /**< 1=管理线程运行中 */
-    int started;                     /**< 1=服务已启动 */
-    int active;                      /**< 当前生效链路索引，-1 表示无 */
-    pthread_t tid;                   /**< 管理线程 */
-    netmgr_ev_cb cb;                 /**< 事件回调，可为空 */
-    char dns[NETMGR_IP_LEN];         /**< 当前已下发的 DNS */
-    pthread_mutex_t lock;            /**< 链路上下文互斥锁 */
-    pthread_mutex_t wait;            /**< 管理线程等待锁，与 cond 配对 */
-    pthread_cond_t cond;             /**< 管理线程等待条件 */
+    volatile int running;                   /**< 1=管理线程运行中 */
+    int started;                            /**< 1=服务已启动 */
+    int active;                             /**< 当前生效链路索引，-1 表示无 */
+    pthread_t tid;                          /**< 管理线程 */
+    netmgr_ev_cb cb;                        /**< 事件回调，可为空 */
+    char dns[NETMGR_IP_LEN];                /**< 当前已下发的 DNS */
+    pthread_mutex_t lock;                   /**< 链路上下文互斥锁 */
+    pthread_mutex_t wait;                   /**< 管理线程等待锁，与 cond 配对 */
+    pthread_cond_t cond;                    /**< 管理线程等待条件 */
     const NETMGR_OPS* ops[NETMGR_TYPE_MAX]; /**< 链路类型到操作表的映射，下标与 NETMGR_TYPE 对齐 */
-    NETMGR_CTX link[NETMGR_TYPE_MAX];/**< 三条链路上下文 */
+    NETMGR_CTX link[NETMGR_TYPE_MAX];       /**< 三条链路上下文 */
 } NETMGR_CORE;
 
 /**
- * 管理核心上下文（模块内单实例，模块全部状态都收敛于此）
+ * 管理核心上下文（模块内单实例，仲裁层状态全部收敛于此）
  * 用途：保存三条链路运行态、当前生效链路、事件回调、已下发 DNS 与同步原语
  * 单位/范围：active 取 -1 或 0~2 的链路下标；prio 取 0~255；running 取 0/1
  * 默认值依据：静态零初始化，start 时显式重建（active=-1 表示无生效链路）；同步原语用静态初始化器
@@ -67,7 +80,7 @@ static void core_wake(void)
  * @param ctx  链路上下文，不可为空
  * @param link 输出快照，不可为空
  */
-void netmgr_core_conv(const NETMGR_CTX* ctx, NETMGR_LINK* link)
+static void core_conv(const NETMGR_CTX* ctx, NETMGR_LINK* link)
 {
     if (NULL == ctx || NULL == link)
         return;
@@ -77,6 +90,7 @@ void netmgr_core_conv(const NETMGR_CTX* ctx, NETMGR_LINK* link)
     link->prio = ctx->prio;
     snprintf(link->ifname, sizeof(link->ifname), "%s", ctx->ifname);
     snprintf(link->ip, sizeof(link->ip), "%s", ctx->ip);
+    snprintf(link->mask, sizeof(link->mask), "%s", ctx->mask);
     snprintf(link->gate, sizeof(link->gate), "%s", ctx->gate);
 }
 
@@ -92,11 +106,13 @@ static void core_notify(NETMGR_EV ev, const NETMGR_CTX* ctx)
     if (NULL == ctx || NULL == g_core.cb)
         return;
 
-    netmgr_core_conv(ctx, &snapshot);
+    core_conv(ctx, &snapshot);
     /* 与当前生效链路一致时对外呈现 ACTIVE，便于应用直接区分主链路 */
     if (g_core.active >= 0 && g_core.active < NETMGR_TYPE_MAX &&
         &g_core.link[g_core.active] == ctx && NETMGR_ST_READY == ctx->state)
+    {
         snapshot.state = NETMGR_ST_ACTIVE;
+    }
 
     (void)g_core.cb(ev, &snapshot);
 }
@@ -104,15 +120,17 @@ static void core_notify(NETMGR_EV ev, const NETMGR_CTX* ctx)
 /**
  * @brief 按当前优先级同步一条链路的默认路由
  * @param ctx 链路上下文，不可为空
+ * @return 0 成功；负值为 NETMGRERR_* 错误码（首个失败步骤）
  */
-static void core_route_sync(NETMGR_CTX* ctx)
+static int core_route_sync(NETMGR_CTX* ctx)
 {
     int need = 0;   /* 1=该链路应下发默认路由 */
     int metric = 0; /* 目标 metric，等于优先级 */
     int ret = 0;    /* 子步骤返回值 */
+    int err = 0;    /* 首个错误码，0 表示尚无失败 */
 
     if (NULL == ctx)
-        return;
+        return -NETMGRERR_PARAM;
 
     /* 就绪且有网关才参与默认路由，AP 模式等场景网关为空 */
     need = (NETMGR_ST_READY == ctx->state && '\0' != ctx->gate[0]) ? 1 : 0;
@@ -121,73 +139,71 @@ static void core_route_sync(NETMGR_CTX* ctx)
     if (!need)
     {
         if (!ctx->route_on)
-            return;
+            return 0;
         ret = netmgr_route_del(ctx->ifname, ctx->rgate, ctx->rmetric);
-        if (ret < 0)
-            NETMGR_ERR("%s 删除默认路由失败, ret=%d", ctx->ifname, ret);
         ctx->route_on = 0;
-        return;
+        return ret;
     }
 
     /* 网关与 metric 均未变化时无需触碰内核，减少无谓抖动 */
     if (ctx->route_on && ctx->rmetric == metric && 0 == strcmp(ctx->rgate, ctx->gate))
-        return;
+        return 0;
 
-    /* 先删旧条目再建新条目，保证同一接口只有一条本模块下发的默认路由 */
+    /* 先删旧条目再建新条目，保证同一接口只有一条本模块下发的默认路由；
+       旧条目删除失败不阻断新条目下发，错误码在末尾上抛 */
     if (ctx->route_on)
     {
         ret = netmgr_route_del(ctx->ifname, ctx->rgate, ctx->rmetric);
         if (ret < 0)
-            NETMGR_ERR("%s 重建路由前删除旧条目失败, ret=%d", ctx->ifname, ret);
+            err = ret;
         ctx->route_on = 0;
     }
 
     ret = netmgr_route_add(ctx->ifname, ctx->gate, metric);
     if (ret < 0)
-    {
-        NETMGR_ERR("%s 下发默认路由失败, ret=%d, gate=%s, metric=%d",
-                   ctx->ifname, ret, ctx->gate, metric);
-        return;
-    }
+        return (0 != err) ? err : ret;
     ctx->route_on = 1;
     ctx->rmetric = metric;
     snprintf(ctx->rgate, sizeof(ctx->rgate), "%s", ctx->gate);
+    return err;
 }
 
 /**
  * @brief 按当前生效链路下发 DNS
+ * @return 0 成功（无生效链路或无需下发同样返回 0）；负值为 NETMGRERR_* 错误码
  */
-static void core_dns_sync(void)
+static int core_dns_sync(void)
 {
     const NETMGR_CTX* ctx = NULL; /* 当前生效链路 */
     int ret = 0;                  /* 子步骤返回值 */
 
     if (g_core.active < 0 || g_core.active >= NETMGR_TYPE_MAX)
-        return;
+        return 0;
     ctx = &g_core.link[g_core.active];
 
     /* 生效链路未配置 DNS 时保留现有配置，避免把可用配置清空 */
     if ('\0' == ctx->dns[0] || 0 == strcmp(ctx->dns, g_core.dns))
-        return;
+        return 0;
 
     ret = netmgr_dns_apply(ctx->dns);
     if (ret < 0)
-    {
-        NETMGR_ERR("下发 DNS %s 失败, ret=%d", ctx->dns, ret);
-        return;
-    }
+        return ret;
     snprintf(g_core.dns, sizeof(g_core.dns), "%s", ctx->dns);
+    return 0;
 }
 
 /**
  * @brief 执行一轮仲裁：刷新状态、同步路由、选举主链路、上报事件
+ * @return 0 全部步骤成功；负值为本轮首个失败步骤的错误码
  */
-static void core_tick(void)
+static int core_tick(void)
 {
     NETMGR_CTX* ctx = NULL; /* 当前遍历的链路上下文 */
-    NETMGR_EV ev = {0};           /* 待上报事件 */
+    NETMGR_EV ev = NETMGR_EV_UP; /* 待上报事件 */
     int old_active = -1;    /* 上一轮生效链路 */
     int new_active = -1;    /* 本轮生效链路 */
+    int err = 0;            /* 本轮首个错误码，0 表示尚无失败 */
+    int ret = 0;            /* 子步骤返回值 */
     int i = 0;              /* 链路下标，从 0 开始 */
 
     pthread_mutex_lock(&g_core.lock);
@@ -199,9 +215,17 @@ static void core_tick(void)
         ctx = &g_core.link[i];
         if (!ctx->enable || NULL == g_core.ops[i])
             continue;
-        if (g_core.ops[i]->refresh(ctx) < 0)
+        ret = g_core.ops[i]->refresh(ctx);
+        if (ret < 0)
+        {
+            /* 单条链路刷新失败不阻断其它链路，仅记录首个错误码 */
+            if (0 == err)
+                err = ret;
             continue;
-        core_route_sync(ctx);
+        }
+        ret = core_route_sync(ctx);
+        if (ret < 0 && 0 == err)
+            err = ret;
 
         /* 状态翻转才通知应用，避免周期刷新造成重复上报 */
         if (ctx->prev != ctx->state)
@@ -226,12 +250,15 @@ static void core_tick(void)
     /* 第三阶段：生效链路变化时先更新 DNS，再上报主链路切换 */
     if (old_active != new_active)
     {
-        core_dns_sync();
+        ret = core_dns_sync();
+        if (ret < 0 && 0 == err)
+            err = ret;
         if (new_active >= 0)
             core_notify(NETMGR_EV_SWITCH, &g_core.link[new_active]);
     }
 
     pthread_mutex_unlock(&g_core.lock);
+    return err;
 }
 
 /**
@@ -264,7 +291,8 @@ static void* core_thread(void* arg)
         (void)pthread_cond_timedwait(&g_core.cond, &g_core.wait, &ts);
         pthread_mutex_unlock(&g_core.wait);
 
-        core_tick();
+        /* 线程内无返回通道，本轮错误码由周期仲裁自行收敛 */
+        (void)core_tick();
     }
     return NULL;
 }
@@ -286,7 +314,6 @@ static int core_link_open(NETMGR_TYPE type, const void* conf, int enable, unsign
         return 0;
     if (NULL == g_core.ops[type])
     {
-        NETMGR_ERR("链路类型 %d 缺少操作表", (int)type);
         return -NETMGRERR_CONF;
     }
 
@@ -299,7 +326,6 @@ static int core_link_open(NETMGR_TYPE type, const void* conf, int enable, unsign
         ctx->enable = 0;
         ctx->state = NETMGR_ST_DOWN;
         ctx->prev = NETMGR_ST_DOWN;
-        NETMGR_ERR("拉起链路类型 %d 失败, ret=%d", (int)type, ret);
     }
     pthread_mutex_unlock(&g_core.lock);
     return ret;
@@ -307,10 +333,12 @@ static int core_link_open(NETMGR_TYPE type, const void* conf, int enable, unsign
 
 /**
  * @brief 拆除全部已启用链路：先撤路由再关链路
+ * @return 0 全部步骤成功；负值为首个失败步骤的错误码
  */
-static void core_links_stop(void)
+static int core_links_stop(void)
 {
     NETMGR_CTX* ctx = NULL; /* 当前遍历的链路上下文 */
+    int err = 0;            /* 首个错误码，0 表示尚无失败 */
     int ret = 0;            /* 子步骤返回值 */
     int i = 0;              /* 链路下标，从 0 开始 */
 
@@ -325,15 +353,15 @@ static void core_links_stop(void)
         if (ctx->route_on)
         {
             ret = netmgr_route_del(ctx->ifname, ctx->rgate, ctx->rmetric);
-            if (ret < 0)
-                NETMGR_ERR("%s 撤除默认路由失败, ret=%d", ctx->ifname, ret);
+            if (ret < 0 && 0 == err)
+                err = ret;
             ctx->route_on = 0;
         }
         if (NULL != g_core.ops[i])
         {
             ret = g_core.ops[i]->close(ctx);
-            if (ret < 0)
-                NETMGR_ERR("关闭链路类型 %d 失败, ret=%d", i, ret);
+            if (ret < 0 && 0 == err)
+                err = ret;
         }
         ctx->enable = 0;
         ctx->state = NETMGR_ST_DOWN;
@@ -341,6 +369,7 @@ static void core_links_stop(void)
     }
     g_core.active = -1;
     pthread_mutex_unlock(&g_core.lock);
+    return err;
 }
 
 /**
@@ -354,13 +383,13 @@ static void core_links_stop(void)
 static int core_link_reset(NETMGR_TYPE type, const void* conf, int enable, unsigned char prio)
 {
     NETMGR_CTX* ctx = &g_core.link[type]; /* 目标链路上下文 */
+    int err = 0;                          /* 首个错误码，0 表示尚无失败 */
     int ret = 0;                          /* 子步骤返回值 */
 
     pthread_mutex_lock(&g_core.lock);
     if (!g_core.started)
     {
         pthread_mutex_unlock(&g_core.lock);
-        NETMGR_ERR("服务未启动, 无法配置链路类型 %d", (int)type);
         return -NETMGRERR_STATE;
     }
 
@@ -369,7 +398,7 @@ static int core_link_reset(NETMGR_TYPE type, const void* conf, int enable, unsig
     {
         ret = netmgr_route_del(ctx->ifname, ctx->rgate, ctx->rmetric);
         if (ret < 0)
-            NETMGR_ERR("%s 撤除旧默认路由失败, ret=%d", ctx->ifname, ret);
+            err = ret;
         ctx->route_on = 0;
     }
 
@@ -377,8 +406,8 @@ static int core_link_reset(NETMGR_TYPE type, const void* conf, int enable, unsig
     if (ctx->enable && NULL != g_core.ops[type])
     {
         ret = g_core.ops[type]->close(ctx);
-        if (ret < 0)
-            NETMGR_ERR("关闭链路类型 %d 失败, ret=%d", (int)type, ret);
+        if (ret < 0 && 0 == err)
+            err = ret;
         ctx->enable = 0;
     }
 
@@ -387,7 +416,7 @@ static int core_link_reset(NETMGR_TYPE type, const void* conf, int enable, unsig
         ctx->state = NETMGR_ST_DOWN;
         ctx->prev = NETMGR_ST_DOWN;
         pthread_mutex_unlock(&g_core.lock);
-        return 0;
+        return err;
     }
 
     /* 第三步：按新配置拉起，失败时保持停用状态并上报错误 */
@@ -399,19 +428,20 @@ static int core_link_reset(NETMGR_TYPE type, const void* conf, int enable, unsig
         ctx->enable = 0;
         ctx->state = NETMGR_ST_DOWN;
         ctx->prev = NETMGR_ST_DOWN;
-        NETMGR_ERR("按新配置拉起链路类型 %d 失败, ret=%d", (int)type, ret);
+        pthread_mutex_unlock(&g_core.lock);
+        return ret;
     }
     pthread_mutex_unlock(&g_core.lock);
-    return ret;
+    return err;
 }
 
 /**
- * @brief 启动网络管理服务，按配置拉起全部启用的链路
+ * @brief 启动仲裁核心，按配置拉起全部启用的链路并开始周期仲裁
  * @param conf 总配置，不可为空
  * @param cb   链路状态回调，可为空
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
+int netmgr_core_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
 {
     int want = 0;  /* 配置中启用的链路数量 */
     int fail = 0;  /* 拉起失败的链路数量 */
@@ -421,7 +451,6 @@ int netmgr_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
 
     if (NULL == conf)
     {
-        NETMGR_ERR("入参 conf 为空");
         return -NETMGRERR_PARAM;
     }
 
@@ -429,7 +458,6 @@ int netmgr_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
     if (g_core.started)
     {
         pthread_mutex_unlock(&g_core.lock);
-        NETMGR_ERR("服务已启动, 不允许重复启动");
         return -NETMGRERR_STATE;
     }
 
@@ -450,7 +478,6 @@ int netmgr_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
     want = (conf->eth.enable ? 1 : 0) + (conf->wifi.enable ? 1 : 0) + (conf->cell.enable ? 1 : 0);
     if (0 == want)
     {
-        NETMGR_ERR("配置中未启用任何链路");
         return -NETMGRERR_CONF;
     }
 
@@ -481,8 +508,7 @@ int netmgr_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
     /* 单条链路失败不阻断其它链路，全部失败才判定启动失败 */
     if (fail >= want)
     {
-        NETMGR_ERR("全部链路拉起失败, 数量=%d, err=%d", fail, err);
-        core_links_stop();
+        (void)core_links_stop();
         (void)netmgr_event_close();
         return err;
     }
@@ -491,30 +517,32 @@ int netmgr_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
     g_core.running = 1;
     if (0 != pthread_create(&g_core.tid, NULL, core_thread, NULL))
     {
-        NETMGR_ERR("创建管理线程失败, errno=%d", errno);
         g_core.running = 0;
         g_core.started = 0;
-        core_links_stop();
+        (void)core_links_stop();
         (void)netmgr_event_close();
         return -NETMGRERR_THREAD;
     }
 
-    /* 立即执行一轮，让静态配置链路无需等待首个周期即可就绪 */
-    core_tick();
+    /* 立即执行一轮，让静态配置链路无需等待首个周期即可就绪；
+       首轮失败只影响个别链路，启动本身已成功，错误由后续轮次自愈 */
+    (void)core_tick();
     return 0;
 }
 
 /**
- * @brief 停止网络管理服务，关闭全部链路并删除本模块下发的默认路由
+ * @brief 停止仲裁核心，关闭全部链路并删除本模块下发的默认路由
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_stop(void)
+int netmgr_core_stop(void)
 {
+    int err = 0; /* 首个错误码，0 表示全部步骤成功 */
+    int ret = 0; /* 子步骤返回值 */
+
     pthread_mutex_lock(&g_core.lock);
     if (!g_core.started)
     {
         pthread_mutex_unlock(&g_core.lock);
-        NETMGR_ERR("服务未启动, 无需停止");
         return -NETMGRERR_STATE;
     }
     pthread_mutex_unlock(&g_core.lock);
@@ -525,48 +553,23 @@ int netmgr_stop(void)
     pthread_cond_signal(&g_core.cond);
     pthread_mutex_unlock(&g_core.wait);
     if (0 != pthread_join(g_core.tid, NULL))
-        NETMGR_ERR("等待管理线程退出失败, errno=%d", errno);
+        err = -NETMGRERR_THREAD;
 
     /* 第二步：停事件监听，避免拆除期间被反复唤醒 */
-    (void)netmgr_event_close();
+    ret = netmgr_event_close();
+    if (ret < 0 && 0 == err)
+        err = ret;
 
     /* 第三步：撤路由并关闭链路 */
-    core_links_stop();
+    ret = core_links_stop();
+    if (ret < 0 && 0 == err)
+        err = ret;
 
     pthread_mutex_lock(&g_core.lock);
     g_core.started = 0;
     g_core.cb = NULL;
     pthread_mutex_unlock(&g_core.lock);
-    return 0;
-}
-
-/**
- * @brief 运行时修改指定类型链路的优先级
- * @param type 链路类型
- * @param prio 新优先级（0-255，小者优先）
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_prio_set(NETMGR_TYPE type, unsigned char prio)
-{
-    if ((int)type < 0 || (int)type >= NETMGR_TYPE_MAX)
-    {
-        NETMGR_ERR("链路类型非法, type=%d", (int)type);
-        return -NETMGRERR_PARAM;
-    }
-
-    pthread_mutex_lock(&g_core.lock);
-    if (!g_core.started)
-    {
-        pthread_mutex_unlock(&g_core.lock);
-        NETMGR_ERR("服务未启动, 无法设置优先级");
-        return -NETMGRERR_STATE;
-    }
-    g_core.link[type].prio = prio;
-    pthread_mutex_unlock(&g_core.lock);
-
-    /* 立即唤醒仲裁，使路由 metric 尽快与新优先级一致 */
-    core_wake();
-    return 0;
+    return err;
 }
 
 /**
@@ -575,11 +578,10 @@ int netmgr_prio_set(NETMGR_TYPE type, unsigned char prio)
  * @param prio 输出当前优先级，不可为空
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_prio_get(NETMGR_TYPE type, unsigned char* prio)
+int netmgr_core_prio_get(NETMGR_TYPE type, unsigned char* prio)
 {
     if ((int)type < 0 || (int)type >= NETMGR_TYPE_MAX || NULL == prio)
     {
-        NETMGR_ERR("入参非法, type=%d", (int)type);
         return -NETMGRERR_PARAM;
     }
 
@@ -595,16 +597,15 @@ int netmgr_prio_get(NETMGR_TYPE type, unsigned char* prio)
  * @param num  入参为数组容量，出参为实际写入条数
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_stat_get(NETMGR_LINK* list, int* num)
+int netmgr_core_stat_get(NETMGR_LINK* list, int* num)
 {
     NETMGR_LINK* item = NULL; /* 当前写入的快照项 */
-    int cap = 0;              /* 数组容量 */
-    int cnt = 0;              /* 实际写入条数 */
-    int i = 0;                /* 链路下标，从 0 开始 */
+    int cap = 0;             /* 数组容量 */
+    int cnt = 0;             /* 实际写入条数 */
+    int i = 0;               /* 链路下标，从 0 开始 */
 
     if (NULL == list || NULL == num || *num <= 0)
     {
-        NETMGR_ERR("入参非法");
         return -NETMGRERR_PARAM;
     }
     cap = *num;
@@ -614,7 +615,7 @@ int netmgr_stat_get(NETMGR_LINK* list, int* num)
     {
         item = &list[cnt];
         memset(item, 0, sizeof(NETMGR_LINK));
-        netmgr_core_conv(&g_core.link[i], item);
+        core_conv(&g_core.link[i], item);
         if (i == g_core.active && NETMGR_ST_READY == g_core.link[i].state)
             item->state = NETMGR_ST_ACTIVE;
         ++cnt;
@@ -626,17 +627,43 @@ int netmgr_stat_get(NETMGR_LINK* list, int* num)
 }
 
 /**
+ * @brief 运行时修改指定类型链路的优先级
+ * @param type 链路类型
+ * @param prio 新优先级（0-255，小者优先）
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_core_prio_set(NETMGR_TYPE type, unsigned char prio)
+{
+    if ((int)type < 0 || (int)type >= NETMGR_TYPE_MAX)
+    {
+        return -NETMGRERR_PARAM;
+    }
+
+    pthread_mutex_lock(&g_core.lock);
+    if (!g_core.started)
+    {
+        pthread_mutex_unlock(&g_core.lock);
+        return -NETMGRERR_STATE;
+    }
+    g_core.link[type].prio = prio;
+    pthread_mutex_unlock(&g_core.lock);
+
+    /* 立即唤醒仲裁，使路由 metric 尽快与新优先级一致 */
+    core_wake();
+    return 0;
+}
+
+/**
  * @brief 重新配置以太网链路
  * @param conf 以太网配置，不可为空
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_eth_set(const NETMGR_ETH_CONF* conf)
+int netmgr_core_eth_set(const NETMGR_ETH_CONF* conf)
 {
     int ret = 0; /* 装配结果 */
 
     if (NULL == conf)
     {
-        NETMGR_ERR("入参 conf 为空");
         return -NETMGRERR_PARAM;
     }
 
@@ -650,13 +677,12 @@ int netmgr_eth_set(const NETMGR_ETH_CONF* conf)
  * @param conf WiFi 配置，不可为空
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_wifi_set(const NETMGR_WIFI_CONF* conf)
+int netmgr_core_wifi_set(const NETMGR_WIFI_CONF* conf)
 {
     int ret = 0; /* 装配结果 */
 
     if (NULL == conf)
     {
-        NETMGR_ERR("入参 conf 为空");
         return -NETMGRERR_PARAM;
     }
 
@@ -670,13 +696,12 @@ int netmgr_wifi_set(const NETMGR_WIFI_CONF* conf)
  * @param conf 4G 配置，不可为空
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_cell_set(const NETMGR_CELL_CONF* conf)
+int netmgr_core_cell_set(const NETMGR_CELL_CONF* conf)
 {
     int ret = 0; /* 装配结果 */
 
     if (NULL == conf)
     {
-        NETMGR_ERR("入参 conf 为空");
         return -NETMGRERR_PARAM;
     }
 
@@ -690,13 +715,12 @@ int netmgr_cell_set(const NETMGR_CELL_CONF* conf)
  * @param dns 单个 IPv4 地址字符串，为空或空串表示清除已下发的 DNS
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_dns_set(const char* dns)
+int netmgr_core_dns_set(const char* dns)
 {
     int ret = 0; /* 写入结果 */
 
     if (NULL != dns && '\0' != dns[0] && !netmgr_ip_valid(dns))
     {
-        NETMGR_ERR("DNS 地址非法, dns=%s", dns);
         return -NETMGRERR_PARAM;
     }
 
@@ -705,7 +729,6 @@ int netmgr_dns_set(const char* dns)
     if (ret < 0)
     {
         pthread_mutex_unlock(&g_core.lock);
-        NETMGR_ERR("下发 DNS 失败, ret=%d", ret);
         return ret;
     }
     snprintf(g_core.dns, sizeof(g_core.dns), "%s", (NULL == dns) ? "" : dns);

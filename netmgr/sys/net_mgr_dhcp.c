@@ -1,9 +1,13 @@
 /**
  * @file net_mgr_dhcp.c
- * @brief DHCP 取址管理：按接口维护独立的 udhcpc 实例
- * @details 每个实例由「子进程 + 输出收尾线程」组成，支持多条链路并发取址；
- *          取址结果由收尾线程判定并释放槽位，仲裁层通过状态刷新感知。
+ * @brief netmgr 系统适配层：DHCP 取址实现（udhcpc 子进程 + 收尾线程）
+ * @details 实例表由本层互斥锁保护：仲裁线程申请与停止，收尾线程只负责释放。
  */
+#include "net_mgr_dhcp.h"
+
+#include "net_mgr_err.h"
+#include "net_mgr_types.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -14,35 +18,34 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#include "net_mgr_def.h"
-
 /** 停止取址时等待收尾线程释放槽位的超时（秒） */
-#define DHCP_STOP_S   3
+#define DHCP_STOP_S     3
 /** 子进程重定向输出失败时的退出码 */
-#define DHCP_EXIT_DUP 126
+#define DHCP_EXIT_DUP   126
 /** 子进程执行 udhcpc 失败时的退出码 */
-#define DHCP_EXIT_EXEC 127
+#define DHCP_EXIT_EXEC  127
 
 /** 单个 DHCP 实例 */
 typedef struct {
     int used;                   /**< 1=实例被占用 */
     int fd;                     /**< 子进程输出管道读端，-1 表示无效 */
     pid_t pid;                  /**< udhcpc 子进程号，-1 表示无 */
+    int err;                    /**< 最近一次取址的错误码，0 表示成功或仍在进行 */
     pthread_t tid;              /**< 输出收尾线程 */
     char ifname[NETMGR_IF_LEN]; /**< 接口名 */
 } NETMGR_DHCP;
 
 /** DHCP 管理上下文，承载本层全部状态 */
 typedef struct {
-    NETMGR_DHCP item[NETMGR_DHCP_MAX]; /**< 实例表，按接口占用槽位 */
-    pthread_mutex_t lock;              /**< 实例表互斥锁 */
-    pthread_cond_t cond;               /**< 槽位变化条件，释放槽位时广播 */
+    NETMGR_DHCP item[4];      /**< 实例表，按接口占用槽位（数量等于链路类型上限） */
+    pthread_mutex_t lock;     /**< 实例表互斥锁 */
+    pthread_cond_t cond;      /**< 槽位变化条件，释放槽位时广播 */
 } NETMGR_DHCP_MGR;
 
 /**
  * DHCP 管理上下文（模块内单实例，本层状态全部收敛于此）
  * 用途：保存 DHCP 实例表及其同步原语，供取址申请、停止与收尾释放共用
- * 单位/范围：实例表固定 NETMGR_DHCP_MAX 个槽位；used 取 0/1；pid/fd 无效时为 -1
+ * 单位/范围：实例表 4 个槽位；used 取 0/1；pid/fd 无效时为 -1
  * 默认值依据：静态零初始化（全部槽位空闲），同步原语用静态初始化器
  * 写入方/读取方：仲裁线程申请与释放，收尾线程只释放；均在 g_dhcp_mgr.lock 保护下访问
  * 生命周期：仅内存态，随进程存在，槽位用完即回收复用
@@ -52,6 +55,9 @@ static NETMGR_DHCP_MGR g_dhcp_mgr = {
     .cond = PTHREAD_COND_INITIALIZER,
 };
 
+/** 实例槽位数量：由实例表维度决定，供申请/停止/查询三处循环共用 */
+static const int g_dhcpMax = (int)(sizeof(g_dhcp_mgr.item) / sizeof(g_dhcp_mgr.item[0]));
+
 /**
  * @brief DHCP 输出收尾线程：排空子进程输出、回收子进程并释放槽位
  * @param arg 指向占用的 NETMGR_DHCP 实例
@@ -60,7 +66,7 @@ static NETMGR_DHCP_MGR g_dhcp_mgr = {
 static void* dhcp_reap(void* arg)
 {
     NETMGR_DHCP* item = (NETMGR_DHCP*)arg; /* 当前实例 */
-    char line[256] = {0};              /* 单行输出缓冲 */
+    char line[256] = {0};                  /* 单行输出缓冲 */
     FILE* fp = NULL;                       /* 管道流视图 */
     int status = 0;                        /* 子进程退出状态 */
     int no_lease = 0;                      /* 1=已判定未取得租约 */
@@ -71,9 +77,9 @@ static void* dhcp_reap(void* arg)
     fp = fdopen(item->fd, "r");
     if (NULL == fp)
     {
-        NETMGR_ERR("%s 输出管道打开失败, errno=%d", item->ifname, errno);
         close(item->fd);
         item->fd = -1;
+        item->err = -NETMGRERR_FILE; /* 取址输出无法读取，按异常记录 */
     }
     else
     {
@@ -83,19 +89,19 @@ static void* dhcp_reap(void* arg)
             if (NULL != strstr(line, "No lease"))
             {
                 no_lease = 1;
-                NETMGR_ERR("%s 未取得租约: %s", item->ifname, line);
             }
         }
         fclose(fp);
         item->fd = -1;
     }
 
+    /* 异步失败无返回通道，统一记录到实例字段，由 stop 汇总上抛 */
     if (item->pid > 0)
     {
         if (item->pid != waitpid(item->pid, &status, 0))
-            NETMGR_ERR("%s 回收 udhcpc(%d) 失败, errno=%d", item->ifname, (int)item->pid, errno);
+            item->err = -NETMGRERR_PROC;
         else if (!no_lease && !(WIFEXITED(status) && 0 == WEXITSTATUS(status)))
-            NETMGR_ERR("%s udhcpc 异常结束, status=0x%x", item->ifname, status);
+            item->err = -NETMGRERR_DHCP;
     }
 
     /* 收尾：释放槽位并通知等待方，后续同接口可再次取址 */
@@ -127,13 +133,12 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
 
     if (NULL == ifname || '\0' == ifname[0] || timeout < 0)
     {
-        NETMGR_ERR("入参非法");
         return -NETMGRERR_PARAM;
     }
 
     /* 第 1 步：查重并占位，占位后立即释放锁，避免阻塞其它链路取址 */
     pthread_mutex_lock(&g_dhcp_mgr.lock);
-    for (i = 0; i < NETMGR_DHCP_MAX; ++i)
+    for (i = 0; i < g_dhcpMax; ++i)
     {
         if (g_dhcp_mgr.item[i].used &&
             0 == strncmp(g_dhcp_mgr.item[i].ifname, ifname, sizeof(g_dhcp_mgr.item[i].ifname)))
@@ -147,11 +152,11 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
     if (idx < 0)
     {
         pthread_mutex_unlock(&g_dhcp_mgr.lock);
-        NETMGR_ERR("DHCP 实例已满, 上限=%d", NETMGR_DHCP_MAX);
         return -NETMGRERR_DHCP;
     }
     item = &g_dhcp_mgr.item[idx];
     item->used = 1;
+    item->err = 0;
     snprintf(item->ifname, sizeof(item->ifname), "%s", ifname);
     pthread_mutex_unlock(&g_dhcp_mgr.lock);
 
@@ -171,7 +176,6 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
 
     if (0 != pipe(pfd))
     {
-        NETMGR_ERR("%s 创建管道失败, errno=%d", ifname, errno);
         goto fail;
     }
 
@@ -179,7 +183,6 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
     pid = fork();
     if (pid < 0)
     {
-        NETMGR_ERR("%s 派生 udhcpc 失败, errno=%d", ifname, errno);
         close(pfd[0]);
         close(pfd[1]);
         goto fail;
@@ -202,7 +205,6 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
     /* 收尾线程以 detach 方式运行，退出时自行释放槽位，避免线程资源残留 */
     if (0 != pthread_attr_init(&attr))
     {
-        NETMGR_ERR("%s 初始化线程属性失败, errno=%d", ifname, errno);
         close(pfd[0]);
         kill(pid, SIGKILL);
         waitpid(pid, NULL, 0);
@@ -212,7 +214,6 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
     if (0 != pthread_create(&item->tid, &attr, dhcp_reap, item))
     {
         pthread_attr_destroy(&attr);
-        NETMGR_ERR("%s 创建收尾线程失败, errno=%d", ifname, errno);
         close(pfd[0]);
         kill(pid, SIGKILL);
         waitpid(pid, NULL, 0);
@@ -223,7 +224,6 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
 
 fail:
     /* 任一步骤失败都回收到同一出口，先释放槽位再返回，避免槽位泄漏 */
-    NETMGR_ERR("%s DHCP 启动失败, 回收实例槽位", ifname);
     pthread_mutex_lock(&g_dhcp_mgr.lock);
     item->used = 0;
     item->fd = -1;
@@ -241,28 +241,30 @@ fail:
 int netmgr_dhcp_stop(const char* ifname)
 {
     NETMGR_DHCP* item = NULL; /* 命中的实例 */
-    struct timespec ts = {0};       /* 等待槽位释放的截止时间 */
+    struct timespec ts = {0}; /* 等待槽位释放的截止时间 */
     pid_t pid = -1;           /* 待结束的子进程号 */
-    int found = 0;            /* 1=找到运行中的实例 */
+    int found = 0;            /* 1=找到该接口对应的实例 */
+    int ret = 0;              /* 最近一次取址的错误码 */
     int i = 0;                /* 实例表下标，从 0 开始 */
 
     if (NULL == ifname || '\0' == ifname[0])
     {
-        NETMGR_ERR("入参 ifname 非法");
         return -NETMGRERR_PARAM;
     }
 
     /* 先在锁内取出实例与子进程号，结束进程时不能持锁，否则收尾线程无法释放槽位 */
     pthread_mutex_lock(&g_dhcp_mgr.lock);
-    for (i = 0; i < NETMGR_DHCP_MAX; ++i)
+    for (i = 0; i < g_dhcpMax; ++i)
     {
-        if (!g_dhcp_mgr.item[i].used)
+        if ('\0' == g_dhcp_mgr.item[i].ifname[0])
             continue;
         if (0 != strncmp(g_dhcp_mgr.item[i].ifname, ifname, sizeof(g_dhcp_mgr.item[i].ifname)))
             continue;
         item = &g_dhcp_mgr.item[i];
-        pid = item->pid;
         found = 1;
+        /* 仅在实例仍被占用时才需要结束子进程；已收尾的实例只取错误码 */
+        if (item->used)
+            pid = item->pid;
         break;
     }
     pthread_mutex_unlock(&g_dhcp_mgr.lock);
@@ -270,11 +272,17 @@ int netmgr_dhcp_stop(const char* ifname)
     if (!found)
         return 0;
 
-    if (pid > 0 && 0 != kill(pid, SIGTERM))
+    /* 实例已收尾：直接把最近一次取址结果作为错误码上抛 */
+    if (pid <= 0)
     {
-        NETMGR_ERR("%s 结束 udhcpc(%d) 失败, errno=%d", ifname, (int)pid, errno);
-        return -NETMGRERR_PROC;
+        pthread_mutex_lock(&g_dhcp_mgr.lock);
+        ret = item->err;
+        pthread_mutex_unlock(&g_dhcp_mgr.lock);
+        return ret;
     }
+
+    if (0 != kill(pid, SIGTERM))
+        return -NETMGRERR_PROC;
 
     /* 等待收尾线程释放槽位：线程已 detach，只能以其占位状态判断是否收尾完成 */
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -285,12 +293,12 @@ int netmgr_dhcp_stop(const char* ifname)
         if (0 != pthread_cond_timedwait(&g_dhcp_mgr.cond, &g_dhcp_mgr.lock, &ts))
         {
             pthread_mutex_unlock(&g_dhcp_mgr.lock);
-            NETMGR_ERR("%s 等待 DHCP 收尾超时", ifname);
             return -NETMGRERR_TIMEOUT;
         }
     }
+    ret = item->err;
     pthread_mutex_unlock(&g_dhcp_mgr.lock);
-    return 0;
+    return ret;
 }
 
 /**
@@ -305,12 +313,11 @@ int netmgr_dhcp_busy(const char* ifname)
 
     if (NULL == ifname || '\0' == ifname[0])
     {
-        NETMGR_ERR("入参 ifname 非法");
         return 0;
     }
 
     pthread_mutex_lock(&g_dhcp_mgr.lock);
-    for (i = 0; i < NETMGR_DHCP_MAX; ++i)
+    for (i = 0; i < g_dhcpMax; ++i)
     {
         if (!g_dhcp_mgr.item[i].used)
             continue;

@@ -1,12 +1,22 @@
 /**
  * @file net_mgr_eth.c
- * @brief 以太网链路实现：静态地址或 DHCP 取址，并提供链路就绪判定
+ * @brief netmgr 链路实现层：以太网链路实现（静态地址或 DHCP 取址）
+ * @details DHCP 取址走通用就绪判定并支持自愈重拉；静态地址只判定连通与地址在位。
  */
+#include "net_mgr_eth.h"
+
+#include "net_mgr_dhcp.h"
+#include "net_mgr_err.h"
+#include "net_mgr_iface.h"
+#include "net_mgr_link.h"
+#include "net_mgr_util.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "net_mgr_def.h"
+/** 默认以太网接口名 */
+#define NETMGR_DEV_ETH      "eth0"
 
 /** 以太网链路私有数据 */
 typedef struct {
@@ -34,14 +44,12 @@ static int eth_open(NETMGR_CTX* ctx, const void* conf)
 
     if (NULL == ctx || NULL == cfg)
     {
-        NETMGR_ERR("入参非法");
         return -NETMGRERR_PARAM;
     }
 
     priv = (NETMGR_ETH_PRIV*)calloc(1, sizeof(NETMGR_ETH_PRIV));
     if (NULL == priv)
     {
-        NETMGR_ERR("申请以太网链路上下文失败");
         return -NETMGRERR_MEM;
     }
     memcpy(&priv->conf, cfg, sizeof(priv->conf));
@@ -49,18 +57,16 @@ static int eth_open(NETMGR_CTX* ctx, const void* conf)
     /* 第 1 步：确定接口名，未指定时使用默认 eth0 */
     if ('\0' == priv->conf.ifname[0])
         snprintf(priv->conf.ifname, sizeof(priv->conf.ifname), "%s", NETMGR_DEV_ETH);
-    if (!netmgr_link_exist(priv->conf.ifname))
+    if (!netmgr_iface_exist(priv->conf.ifname))
     {
-        NETMGR_ERR("接口 %s 不存在", priv->conf.ifname);
         free(priv);
         return -NETMGRERR_NOTFOUND;
     }
 
     /* 第 2 步：启用接口，地址配置前必须处于可操作状态 */
-    ret = netmgr_link_enable(priv->conf.ifname, 1);
+    ret = netmgr_iface_enable(priv->conf.ifname, 1);
     if (ret < 0)
     {
-        NETMGR_ERR("启用 %s 失败, ret=%d", priv->conf.ifname, ret);
         free(priv);
         return ret;
     }
@@ -71,7 +77,6 @@ static int eth_open(NETMGR_CTX* ctx, const void* conf)
         ret = netmgr_dhcp_start(priv->conf.ifname, 0);
         if (ret < 0)
         {
-            NETMGR_ERR("%s 启动 DHCP 失败, ret=%d", priv->conf.ifname, ret);
             free(priv);
             return ret;
         }
@@ -80,22 +85,18 @@ static int eth_open(NETMGR_CTX* ctx, const void* conf)
     {
         if (!netmgr_ip_valid(priv->conf.ip) || !netmgr_ip_valid(priv->conf.mask))
         {
-            NETMGR_ERR("%s 静态地址配置非法, ip=%s, mask=%s", priv->conf.ifname,
-                       priv->conf.ip, priv->conf.mask);
             free(priv);
             return -NETMGRERR_CONF;
         }
-        ret = netmgr_link_setip(priv->conf.ifname, priv->conf.ip);
+        ret = netmgr_iface_setip(priv->conf.ifname, priv->conf.ip);
         if (ret < 0)
         {
-            NETMGR_ERR("%s 设置地址失败, ret=%d", priv->conf.ifname, ret);
             free(priv);
             return ret;
         }
-        ret = netmgr_link_setmask(priv->conf.ifname, priv->conf.mask);
+        ret = netmgr_iface_setmask(priv->conf.ifname, priv->conf.mask);
         if (ret < 0)
         {
-            NETMGR_ERR("%s 设置掩码失败, ret=%d", priv->conf.ifname, ret);
             free(priv);
             return ret;
         }
@@ -115,27 +116,23 @@ static int eth_open(NETMGR_CTX* ctx, const void* conf)
  */
 static int eth_close(NETMGR_CTX* ctx)
 {
-    int ret = 0; /* 停止 DHCP 的返回值 */
+    int ret = 0; /* 停止 DHCP 的返回值，负值为错误码 */
 
     if (NULL == ctx)
     {
-        NETMGR_ERR("入参 ctx 为空");
         return -NETMGRERR_PARAM;
     }
 
+    /* 停止取址失败不阻断资源释放，错误码在末尾上抛 */
     if ('\0' != ctx->ifname[0])
-    {
         ret = netmgr_dhcp_stop(ctx->ifname);
-        if (ret < 0)
-            NETMGR_ERR("停止 %s 的 DHCP 失败, ret=%d", ctx->ifname, ret);
-    }
 
-    /* 私有数据在本层释放，上下文本身由仲裁层统一管理 */
+    /* 私有数据在本层释放，上下文本身由 core 层统一管理 */
     free(ctx->priv);
     ctx->priv = NULL;
     ctx->state = NETMGR_ST_DOWN;
     ctx->route_on = 0;
-    return 0;
+    return ret;
 }
 
 /**
@@ -150,7 +147,6 @@ static int eth_refresh(NETMGR_CTX* ctx)
 
     if (NULL == ctx || NULL == ctx->priv)
     {
-        NETMGR_ERR("链路上下文未初始化");
         return -NETMGRERR_PARAM;
     }
     priv = (NETMGR_ETH_PRIV*)ctx->priv;
@@ -166,29 +162,11 @@ static int eth_refresh(NETMGR_CTX* ctx)
         {
             ret = netmgr_dhcp_start(ctx->ifname, 0);
             if (ret < 0)
-                NETMGR_ERR("%s 重新拉起 DHCP 失败, ret=%d", ctx->ifname, ret);
+                return ret;
         }
         return 0;
     }
 
     /* 静态地址：只判定连通性与地址是否在位，网关取配置值 */
-    ctx->ip[0] = '\0';
-    ctx->gate[0] = '\0';
-    if (!netmgr_link_up(ctx->ifname))
-    {
-        ctx->state = NETMGR_ST_DOWN;
-        return 0;
-    }
-    ret = netmgr_link_ip(ctx->ifname, ctx->ip, (int)sizeof(ctx->ip));
-    if (ret < 0)
-        return ret;
-    if ('\0' == ctx->ip[0])
-    {
-        ctx->state = NETMGR_ST_DOWN;
-        return 0;
-    }
-
-    snprintf(ctx->gate, sizeof(ctx->gate), "%s", priv->conf.gate);
-    ctx->state = ('\0' != ctx->gate[0]) ? NETMGR_ST_READY : NETMGR_ST_DOWN;
-    return 0;
+    return netmgr_link_ready_static(ctx, priv->conf.gate);
 }

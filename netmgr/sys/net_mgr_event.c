@@ -1,9 +1,13 @@
 /**
  * @file net_mgr_event.c
- * @brief netlink 事件监听：链路、IPv4 地址与路由变化
- * @details 采用「接收线程 + 唤醒回调」模型，事件只负责唤醒仲裁线程提前刷新，
- *          具体状态判定统一在仲裁层完成，避免事件处理与状态机纠缠。
+ * @brief netmgr 系统适配层：netlink 事件监听实现
+ * @details 订阅链路、IPv4 地址与路由变化，事件到达只做唤醒，不做状态判定，
+ *          避免事件处理与上层状态机纠缠。
  */
+#include "net_mgr_event.h"
+
+#include "net_mgr_err.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -12,8 +16,6 @@
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-
-#include "net_mgr_def.h"
 
 /** 接收超时时间（微秒），用于周期性检查退出标志 */
 #define EVENT_WAIT_US 500000
@@ -57,12 +59,11 @@ static void* event_thread(void* arg)
         n = recv(ev->fd, ev->buf, sizeof(ev->buf), 0);
         if (n <= 0)
         {
-            /* 超时用于周期性检查退出标志，其余错误记录后继续 */
+            /* 超时用于周期性检查退出标志，其余错误直接重试 */
             if (EAGAIN == errno || EWOULDBLOCK == errno || EINTR == errno)
                 continue;
             if (!ev->running)
                 break;
-            NETMGR_ERR("接收 netlink 事件失败, errno=%d", errno);
             usleep(EVENT_WAIT_US);
             continue;
         }
@@ -90,7 +91,7 @@ static void* event_thread(void* arg)
 }
 
 /**
- * @brief 启动 netlink 事件监听
+ * @brief 启动 netlink 事件监听（链路、地址、路由变化）
  * @param wake 事件到达时的唤醒回调，可为空
  * @return 0 成功（已在运行时同样返回 0）；负值为 NETMGRERR_* 错误码
  */
@@ -98,7 +99,7 @@ int netmgr_event_open(void (*wake)(void))
 {
     struct sockaddr_nl addr = {0}; /* 本地 netlink 地址 */
     struct timeval tv = {0};       /* 接收超时 */
-    int fd = -1;             /* netlink socket */
+    int fd = -1;                   /* netlink socket */
 
     if (g_event.running)
         return 0;
@@ -106,7 +107,6 @@ int netmgr_event_open(void (*wake)(void))
     fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (fd < 0)
     {
-        NETMGR_ERR("创建事件 socket 失败, errno=%d", errno);
         return -NETMGRERR_SOCKET;
     }
 
@@ -115,7 +115,6 @@ int netmgr_event_open(void (*wake)(void))
     addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV4_ROUTE;
     if (0 != bind(fd, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
-        NETMGR_ERR("绑定事件 socket 失败, errno=%d", errno);
         close(fd);
         return -NETMGRERR_SOCKET;
     }
@@ -124,14 +123,17 @@ int netmgr_event_open(void (*wake)(void))
     tv.tv_sec = 0;
     tv.tv_usec = EVENT_WAIT_US;
     if (0 != setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv)))
-        NETMGR_ERR("设置事件接收超时失败, errno=%d", errno);
+    {
+        /* 无超时则接收线程无法周期性检查退出标志，按异常返回 */
+        close(fd);
+        return -NETMGRERR_SOCKET;
+    }
 
     g_event.fd = fd;
     g_event.wake = wake;
     g_event.running = 1;
     if (0 != pthread_create(&g_event.tid, NULL, event_thread, &g_event))
     {
-        NETMGR_ERR("创建事件线程失败, errno=%d", errno);
         g_event.running = 0;
         close(fd);
         g_event.fd = -1;
@@ -153,7 +155,6 @@ int netmgr_event_close(void)
     /* 线程最长在一个接收超时周期内退出，join 保证 socket 关闭时不再被使用 */
     if (0 != pthread_join(g_event.tid, NULL))
     {
-        NETMGR_ERR("等待事件线程退出失败, errno=%d", errno);
         return -NETMGRERR_THREAD;
     }
     if (g_event.fd >= 0)

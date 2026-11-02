@@ -1,9 +1,12 @@
 /**
  * @file net_mgr_proc.c
- * @brief 外部进程控制：存在性探测、批量结束、shell 命令执行
- * @details 用于管理 wpa_supplicant、hostapd、udhcpd 等外部进程，避免引入对
- *          base 内其它模块的依赖。
+ * @brief netmgr 系统适配层：外部进程控制实现（/proc 遍历 + system）
+ * @details 仅依赖内核 procfs 与 libc，不依赖 sys 层其它能力。
  */
+#include "net_mgr_proc.h"
+
+#include "net_mgr_err.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,8 +18,6 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-
-#include "net_mgr_def.h"
 
 /** 进程文件系统根目录 */
 #define PROC_ROOT     "/proc"
@@ -31,8 +32,8 @@
 static int proc_read_name(int pid, char* name, int len)
 {
     char path[128] = {0}; /* /proc/<pid>/comm 路径 */
-    FILE* fp = NULL;           /* 进程名文件句柄 */
-    int ok = 0;                /* 读取结果标志 */
+    FILE* fp = NULL;      /* 进程名文件句柄 */
+    int ok = 0;           /* 读取结果标志 */
 
     if (NULL == name || len <= 1)
         return 0;
@@ -40,7 +41,7 @@ static int proc_read_name(int pid, char* name, int len)
     snprintf(path, sizeof(path), PROC_ROOT "/%d/comm", pid);
     fp = fopen(path, "r");
     if (NULL == fp)
-        return 0; /* 进程已退出属于正常竞争，不打印日志 */
+        return 0; /* 进程已退出属于正常竞争，不视为异常 */
 
     if (NULL != fgets(name, len, fp))
     {
@@ -60,20 +61,18 @@ int netmgr_proc_exist(const char* name)
 {
     DIR* dir = NULL;           /* /proc 目录句柄 */
     struct dirent* ent = NULL; /* 目录项 */
-    char comm[64] = {0};  /* 进程名缓冲 */
+    char comm[64] = {0};       /* 进程名缓冲 */
     int pid = 0;               /* 当前目录项对应的进程号 */
     int found = 0;             /* 是否已找到目标进程 */
 
     if (NULL == name || '\0' == name[0])
     {
-        NETMGR_ERR("入参 name 非法");
         return 0;
     }
 
     dir = opendir(PROC_ROOT);
     if (NULL == dir)
     {
-        NETMGR_ERR("打开 %s 失败, errno=%d", PROC_ROOT, errno);
         return 0;
     }
 
@@ -105,19 +104,18 @@ int netmgr_proc_kill(const char* name)
 {
     DIR* dir = NULL;           /* /proc 目录句柄 */
     struct dirent* ent = NULL; /* 目录项 */
-    char comm[64] = {0};  /* 进程名缓冲 */
+    char comm[64] = {0};       /* 进程名缓冲 */
     int pid = 0;               /* 当前目录项对应的进程号 */
+    int err = 0;               /* 首个结束失败的错误码，0 表示全部成功 */
 
     if (NULL == name || '\0' == name[0])
     {
-        NETMGR_ERR("入参 name 非法");
         return -NETMGRERR_PARAM;
     }
 
     dir = opendir(PROC_ROOT);
     if (NULL == dir)
     {
-        NETMGR_ERR("打开 %s 失败, errno=%d", PROC_ROOT, errno);
         return -NETMGRERR_FILE;
     }
 
@@ -133,12 +131,12 @@ int netmgr_proc_kill(const char* name)
             continue;
         if (0 != strncmp(comm, name, sizeof(comm)))
             continue;
-        if (0 != kill(pid, SIGTERM))
-            NETMGR_ERR("结束进程 %s(%d) 失败, errno=%d", name, pid, errno);
+        if (0 != kill(pid, SIGTERM) && 0 == err)
+            err = -NETMGRERR_PROC;
     }
 
     closedir(dir);
-    return 0;
+    return err;
 }
 
 /**
@@ -149,14 +147,13 @@ int netmgr_proc_kill(const char* name)
 int netmgr_proc_exec(const char* fmt, ...)
 {
     char cmd[128] = {0}; /* 完整命令行 */
-    va_list ap;               /* 可变参数表 */
-    int len = 0;              /* 格式化结果长度 */
-    int status = 0;           /* 命令退出状态 */
-    int ret = 0;              /* system 返回值 */
+    va_list ap;          /* 可变参数表 */
+    int len = 0;         /* 格式化结果长度 */
+    int status = 0;      /* 命令退出状态 */
+    int ret = 0;         /* system 返回值 */
 
     if (NULL == fmt || '\0' == fmt[0])
     {
-        NETMGR_ERR("入参 fmt 非法");
         return -NETMGRERR_PARAM;
     }
 
@@ -165,25 +162,21 @@ int netmgr_proc_exec(const char* fmt, ...)
     va_end(ap);
     if (len <= 0 || len >= (int)sizeof(cmd))
     {
-        NETMGR_ERR("命令行超长, 需要 %d 字节, 上限 %d", len + 1, (int)sizeof(cmd));
         return -NETMGRERR_BUFF;
     }
 
     ret = system(cmd);
     if (ret < 0)
     {
-        NETMGR_ERR("执行命令失败, errno=%d, cmd=%s", errno, cmd);
         return -NETMGRERR_PROC;
     }
     if (!WIFEXITED(ret))
     {
-        NETMGR_ERR("命令非正常退出, status=0x%x, cmd=%s", ret, cmd);
         return -NETMGRERR_PROC;
     }
     status = WEXITSTATUS(ret);
     if (0 != status)
     {
-        NETMGR_ERR("命令返回失败, status=%d, cmd=%s", status, cmd);
         return -NETMGRERR_PROC;
     }
     return 0;

@@ -1,9 +1,14 @@
 /**
  * @file net_mgr_route.c
- * @brief 路由管理：基于 rtnetlink 下发、删除与查询带 metric 的 IPv4 默认路由
- * @details 主备切换依赖内核按 metric 选路，因此路由必须带 RTA_PRIORITY，
- *          这是 ioctl(SIOCADDRT) 无法可靠表达的能力。
+ * @brief netmgr 系统适配层：默认路由管理实现（rtnetlink）
+ * @details 主备切换依赖内核按 metric 选路，因此路由必须带 RTA_PRIORITY。
+ *          收发缓冲为文件级单实例，调用方需保证串行调用（core 层以 g_core.lock 保证）。
  */
+#include "net_mgr_route.h"
+
+#include "net_mgr_err.h"
+#include "net_mgr_util.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -13,8 +18,6 @@
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-
-#include "net_mgr_def.h"
 
 /** 路由层上下文，承载本层全部状态 */
 typedef struct {
@@ -26,7 +29,7 @@ typedef struct {
  * 用途：保存路由 request/reply 收发缓冲，供 route_send 与 route_dump 复用
  * 单位/范围：缓冲固定 4096 字节（单次 dump 分片小于该值）
  * 默认值依据：静态零初始化；4096 为 netlink 单次读取常用长度，且超栈上限故下沉
- * 写入方/读取方：仅仲裁线程经 route_send/route_dump 串行读写
+ * 写入方/读取方：仅 core 仲裁线程经 route_send/route_dump 串行读写（持 g_core.lock）
  * 生命周期：仅内存态，随进程存在，不持久化
  */
 static NETMGR_RT_CTX g_rt_ctx;
@@ -48,7 +51,6 @@ static int route_sock_open(void)
 
     if (fd < 0)
     {
-        NETMGR_ERR("创建路由 socket 失败, errno=%d", errno);
         return -NETMGRERR_SOCKET;
     }
     return fd;
@@ -70,14 +72,12 @@ static int route_attr(struct nlmsghdr* nlh, int type, const void* data, int len,
 
     if (NULL == nlh || NULL == data || len <= 0)
     {
-        NETMGR_ERR("入参非法");
         return -NETMGRERR_PARAM;
     }
 
     need = (int)RTA_ALIGN(nlh->nlmsg_len) + (int)RTA_ALIGN(RTA_LENGTH(len));
     if (need > cap)
     {
-        NETMGR_ERR("属性区不足, 需要 %d 字节, 容量 %d", need, cap);
         return -NETMGRERR_BUFF;
     }
 
@@ -98,21 +98,19 @@ static int route_attr(struct nlmsghdr* nlh, int type, const void* data, int len,
 static int route_send(int fd, struct nlmsghdr* nlh)
 {
     struct sockaddr_nl addr = {0};   /* 内核 netlink 地址 */
-    struct nlmsghdr* msg = NULL; /* 回复消息视图 */
-    struct nlmsgerr* err = NULL; /* 错误消息视图 */
-    int len = 0;               /* 本轮有效长度 */
-    ssize_t n = 0;             /* 接收字节数 */
+    struct nlmsghdr* msg = NULL;     /* 回复消息视图 */
+    struct nlmsgerr* err = NULL;     /* 错误消息视图 */
+    int len = 0;                     /* 本轮有效长度 */
+    ssize_t n = 0;                   /* 接收字节数 */
 
     if (NULL == nlh)
     {
-        NETMGR_ERR("入参 nlh 为空");
         return -NETMGRERR_PARAM;
     }
 
     addr.nl_family = AF_NETLINK;
     if (0 > sendto(fd, nlh, nlh->nlmsg_len, 0, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
-        NETMGR_ERR("发送路由请求失败, errno=%d", errno);
         return -NETMGRERR_SOCKET;
     }
 
@@ -120,7 +118,6 @@ static int route_send(int fd, struct nlmsghdr* nlh)
     n = recv(fd, g_rt_ctx.buf, sizeof(g_rt_ctx.buf), 0);
     if (n <= 0)
     {
-        NETMGR_ERR("接收路由确认失败, errno=%d", errno);
         return -NETMGRERR_SOCKET;
     }
 
@@ -133,11 +130,9 @@ static int route_send(int fd, struct nlmsghdr* nlh)
         if (0 == err->error)
             return 0;
         errno = -err->error;
-        NETMGR_ERR("路由操作被内核拒绝, errno=%d", errno);
         return -NETMGRERR_ROUTE;
     }
 
-    NETMGR_ERR("未收到内核确认消息");
     return -NETMGRERR_ROUTE;
 }
 
@@ -149,14 +144,14 @@ static int route_send(int fd, struct nlmsghdr* nlh)
  */
 static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* best)
 {
-    struct rtmsg* rtm = NULL;  /* 路由消息体 */
-    struct rtattr* rta = NULL; /* 属性视图 */
-    struct in_addr gw = {0};         /* 网关地址 */
+    struct rtmsg* rtm = NULL;         /* 路由消息体 */
+    struct rtattr* rta = NULL;        /* 属性视图 */
+    struct in_addr gw = {0};          /* 网关地址 */
     char ifname[NETMGR_IF_LEN] = {0}; /* 出口接口名 */
-    int rta_len = 0;           /* 剩余属性长度 */
-    int metric = 0;            /* 路由 metric */
-    int oif = 0;               /* 出口接口索引 */
-    int has_gw = 0;            /* 1=已解析到网关 */
+    int rta_len = 0;                  /* 剩余属性长度 */
+    int metric = 0;                   /* 路由 metric */
+    int oif = 0;                      /* 出口接口索引 */
+    int has_gw = 0;                   /* 1=已解析到网关 */
 
     rtm = (struct rtmsg*)NLMSG_DATA(nlh);
     /* 只处理主路由表中的 IPv4 默认路由，其它条目与主备无关 */
@@ -193,7 +188,6 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
         return;
     if (NULL == if_indextoname((unsigned int)oif, ifname))
     {
-        NETMGR_ERR("接口索引 %d 转换失败, errno=%d", oif, errno);
         return;
     }
     if (NULL != filter && 0 != strcmp(filter, ifname))
@@ -204,7 +198,6 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
 
     if (NULL == inet_ntop(AF_INET, &gw, best->gate, (socklen_t)sizeof(best->gate)))
     {
-        NETMGR_ERR("网关地址转换失败, errno=%d", errno);
         return;
     }
     snprintf(best->ifname, sizeof(best->ifname), "%s", ifname);
@@ -219,18 +212,17 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
  */
 static int route_dump(const char* filter, NETMGR_ROUTE* best)
 {
-    struct sockaddr_nl addr = {0};     /* 内核 netlink 地址 */
-    struct nlmsghdr* nlh = NULL; /* 请求消息视图 */
-    struct rtmsg* rtm = NULL;    /* 请求路由消息体 */
-    int fd = -1;                 /* netlink socket */
-    int len = 0;                 /* 本轮有效长度 */
-    int done = 0;                /* 1=dump 结束 */
-    ssize_t n = 0;               /* 接收字节数 */
-    int ret = 0;                 /* 返回值 */
+    struct sockaddr_nl addr = {0}; /* 内核 netlink 地址 */
+    struct nlmsghdr* nlh = NULL;   /* 请求消息视图 */
+    struct rtmsg* rtm = NULL;      /* 请求路由消息体 */
+    int fd = -1;                   /* netlink socket */
+    int len = 0;                   /* 本轮有效长度 */
+    int done = 0;                  /* 1=dump 结束 */
+    ssize_t n = 0;                 /* 接收字节数 */
+    int ret = 0;                   /* 返回值 */
 
     if (NULL == best)
     {
-        NETMGR_ERR("入参 best 为空");
         return -NETMGRERR_PARAM;
     }
     best->metric = -1;
@@ -251,7 +243,6 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
     addr.nl_family = AF_NETLINK;
     if (0 > sendto(fd, nlh, nlh->nlmsg_len, 0, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
-        NETMGR_ERR("发送路由查询失败, errno=%d", errno);
         close(fd);
         return -NETMGRERR_SOCKET;
     }
@@ -262,7 +253,6 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
         n = recv(fd, g_rt_ctx.buf, sizeof(g_rt_ctx.buf), 0);
         if (n <= 0)
         {
-            NETMGR_ERR("接收路由查询结果失败, errno=%d", errno);
             close(fd);
             return -NETMGRERR_SOCKET;
         }
@@ -277,7 +267,6 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
             }
             if (NLMSG_ERROR == nlh->nlmsg_type)
             {
-                NETMGR_ERR("路由查询返回错误消息");
                 close(fd);
                 return -NETMGRERR_ROUTE;
             }
@@ -303,20 +292,18 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
 {
     NETMGR_RREQ req = {0};          /* 请求缓冲 */
     struct in_addr gw = {0};        /* 网关地址 */
-    unsigned int ifindex = 0; /* 出口接口索引 */
-    int fd = -1;              /* netlink socket */
-    int ret = 0;              /* 子步骤返回值 */
+    unsigned int ifindex = 0;       /* 出口接口索引 */
+    int fd = -1;                    /* netlink socket */
+    int ret = 0;                    /* 子步骤返回值 */
 
     if (NULL == ifname || NULL == gate || !netmgr_ip_valid(gate) || metric < 0)
     {
-        NETMGR_ERR("入参非法, ifname=%s", (NULL == ifname) ? "" : ifname);
         return -NETMGRERR_PARAM;
     }
 
     ifindex = if_nametoindex(ifname);
     if (0 == ifindex)
     {
-        NETMGR_ERR("接口 %s 不存在", ifname);
         return -NETMGRERR_NOTFOUND;
     }
 
@@ -334,7 +321,6 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
 
     if (1 != inet_pton(AF_INET, gate, &gw))
     {
-        NETMGR_ERR("转换网关 %s 失败", gate);
         return -NETMGRERR_PARAM;
     }
 
@@ -356,7 +342,6 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
     close(fd);
     if (ret < 0)
     {
-        NETMGR_ERR("下发默认路由失败, ifname=%s, gate=%s, metric=%d", ifname, gate, metric);
         return ret;
     }
     return 0;
@@ -373,20 +358,18 @@ int netmgr_route_del(const char* ifname, const char* gate, int metric)
 {
     NETMGR_RREQ req = {0};          /* 请求缓冲 */
     struct in_addr gw = {0};        /* 网关地址 */
-    unsigned int ifindex = 0; /* 出口接口索引 */
-    int fd = -1;              /* netlink socket */
-    int ret = 0;              /* 子步骤返回值 */
+    unsigned int ifindex = 0;       /* 出口接口索引 */
+    int fd = -1;                    /* netlink socket */
+    int ret = 0;                    /* 子步骤返回值 */
 
     if (NULL == ifname || NULL == gate || !netmgr_ip_valid(gate) || metric < 0)
     {
-        NETMGR_ERR("入参非法, ifname=%s", (NULL == ifname) ? "" : ifname);
         return -NETMGRERR_PARAM;
     }
 
     ifindex = if_nametoindex(ifname);
     if (0 == ifindex)
     {
-        NETMGR_ERR("接口 %s 不存在", ifname);
         return -NETMGRERR_NOTFOUND;
     }
 
@@ -404,7 +387,6 @@ int netmgr_route_del(const char* ifname, const char* gate, int metric)
 
     if (1 != inet_pton(AF_INET, gate, &gw))
     {
-        NETMGR_ERR("转换网关 %s 失败", gate);
         return -NETMGRERR_PARAM;
     }
 
@@ -426,7 +408,6 @@ int netmgr_route_del(const char* ifname, const char* gate, int metric)
     close(fd);
     if (ret < 0)
     {
-        NETMGR_ERR("删除默认路由失败, ifname=%s, gate=%s, metric=%d", ifname, gate, metric);
         return ret;
     }
     return 0;
@@ -452,7 +433,6 @@ int netmgr_route_dev(const char* ifname, NETMGR_ROUTE* out)
 {
     if (NULL == ifname || '\0' == ifname[0])
     {
-        NETMGR_ERR("入参 ifname 非法");
         return -NETMGRERR_PARAM;
     }
     return route_dump(ifname, out);
