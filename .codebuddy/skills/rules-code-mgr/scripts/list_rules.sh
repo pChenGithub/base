@@ -6,6 +6,7 @@
 #   4) 个性化扩展挂载点（提示）
 #   5) 内容客观性（禁止绑定具体项目 / 业务：项目名、业务模块、业务对象、型号、项目全局量、绝对路径）
 #   6) 同文件重复条文（不合规）；跨文件重复条文（提示，应收敛为一处 + 指针）
+#   7) 注入长度上限（≤8000 字符；always-apply 规则超出部分会被平台截断且裁掉尾部）
 #
 # 用法: bash list_rules.sh [rules目录路径]   (默认 <当前目录>/.codebuddy/rules/)
 # 退出码: 0=全部合规；1=存在不合规项
@@ -23,6 +24,11 @@ TERMS='zyck|SmartLink|qxosui|myapp|X-AIOS|ECP|scbox|SCBOX|Scbox|g_globalData|app
 
 # description 建议上限（字符数，中文按 1 字符计）
 DESC_MAX=120
+
+# 规则正文注入上限与预警线（字符数，中文按 1 字符计）：
+# 8000 为平台 always-apply 单文件注入上限，超出部分被截断；7000 起预警，留出新增条款余量
+RULE_MAX=8000
+RULE_WARN=7000
 
 SCAN_FILE=$(mktemp)
 trap 'rm -f "$SCAN_FILE"' EXIT
@@ -61,6 +67,15 @@ for f in "$RULES_DIR"/*.mdc; do
     fi
     if ! grep -q '^globs:' "$f"; then
         echo "[提示] $base  -> 未声明 globs（规则全项目适用时可省略）"
+    fi
+
+    # 2.5) 注入长度上限：always-apply 规则单文件超出上限会被平台截断（裁尾部，且不报错）
+    char_total=$(wc -m < "$f")
+    if [ "$char_total" -gt "$RULE_MAX" ]; then
+        echo "[不合规] $base  -> 超出注入上限($char_total 字符 > $RULE_MAX)，尾部会被截断；须先精炼措辞，仍超则按主题拆分"
+        FAIL=1
+    elif [ "$char_total" -gt "$RULE_WARN" ]; then
+        echo "[提示] $base  -> 接近注入上限($char_total 字符 > $RULE_WARN)，新增条款前先精炼或拆分"
     fi
 
     # 3) 必备单元
