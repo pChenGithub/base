@@ -25,8 +25,6 @@
 #define WPA_PSK_MIN    8
 /** wpa 回复前缀长度（"CTRL-RSP"） */
 #define WPA_RSP_LEN    8
-/** wpa 控制接口路径缓冲长度，与 sockaddr_un.sun_path 对齐 */
-#define WPA_PATH_LEN   108
 /** wpa 回复失败标记长度（"FAIL"） */
 #define WPA_FAIL_LEN   4
 
@@ -54,9 +52,9 @@ const NETMGR_OPS netmgr_wifi_ops = {wifi_open, wifi_close, wifi_refresh};
  */
 static int wpa_open(NETMGR_WIFI_PRIV* priv)
 {
-    struct sockaddr_un addr; /* 控制接口地址 */
-    struct timeval tv;       /* 收发超时 */
-    char path[WPA_PATH_LEN]; /* 控制接口路径，长度与 sun_path 对齐避免截断 */
+    struct sockaddr_un addr = {0}; /* 控制接口地址 */
+    struct timeval tv = {0};       /* 收发超时 */
+    char path[108] = {0}; /* 控制接口路径，长度与 sun_path 对齐避免截断 */
     int fd = -1;             /* 控制 socket */
     int err = 0;             /* 失败时的 errno 快照 */
 
@@ -82,7 +80,6 @@ static int wpa_open(NETMGR_WIFI_PRIV* priv)
         return -NETMGRERR_SOCKET;
     }
 
-    memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
     if (0 != connect(fd, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
@@ -126,7 +123,7 @@ static void wpa_close(NETMGR_WIFI_PRIV* priv)
  */
 static int wpa_cmd(NETMGR_WIFI_PRIV* priv, const char* cmd, char* out, int len)
 {
-    char buf[NETMGR_WPA_LEN]; /* 回复原始缓冲 */
+    char buf[1024] = {0}; /* 回复原始缓冲 */
     char* data = NULL;        /* 回复正文起点 */
     ssize_t n = 0;            /* 收发字节数 */
 
@@ -142,7 +139,6 @@ static int wpa_cmd(NETMGR_WIFI_PRIV* priv, const char* cmd, char* out, int len)
         return -NETMGRERR_WPA;
     }
 
-    memset(buf, 0, sizeof(buf));
     n = recv(priv->sock, buf, sizeof(buf) - 1, 0);
     if (n <= 0)
     {
@@ -203,7 +199,7 @@ static int wpa_conf_write(void)
  */
 static int wpa_wait(const char* ifname)
 {
-    char path[WPA_PATH_LEN]; /* 控制接口路径，长度与 sun_path 对齐 */
+    char path[108] = {0}; /* 控制接口路径，长度与 sun_path 对齐 */
     int i = 0;               /* 轮询次数，从 0 开始 */
 
     if (NULL == ifname)
@@ -235,7 +231,7 @@ static int wpa_wait(const char* ifname)
  */
 static int wpa_wait_conn(NETMGR_WIFI_PRIV* priv)
 {
-    char out[NETMGR_WPA_LEN]; /* STATUS 回复 */
+    char out[1024] = {0}; /* STATUS 回复 */
     int i = 0;                /* 轮询次数，从 0 开始 */
 
     if (NULL == priv)
@@ -266,7 +262,7 @@ static int wpa_wait_conn(NETMGR_WIFI_PRIV* priv)
 static int sta_start(NETMGR_WIFI_PRIV* priv, NETMGR_CTX* ctx)
 {
     char id[16] = {0};           /* wpa 网络配置编号 */
-    char cmd[NETMGR_CMD_LEN];    /* 拼接后的控制命令 */
+    char cmd[128] = {0};    /* 拼接后的控制命令 */
     int ret = 0;                 /* 子步骤返回值 */
 
     /* 第 1 步：保证 wpa_supplicant 由本模块独占启动，避免沿用未知配置 */

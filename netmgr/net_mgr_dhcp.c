@@ -16,8 +16,6 @@
 
 #include "net_mgr_def.h"
 
-/** udhcpc 输出单行读取缓冲长度 */
-#define DHCP_LINE_LEN 256
 /** 停止取址时等待收尾线程释放槽位的超时（秒） */
 #define DHCP_STOP_S   3
 /** 子进程重定向输出失败时的退出码 */
@@ -34,12 +32,25 @@ typedef struct {
     char ifname[NETMGR_IF_LEN]; /**< 接口名 */
 } NETMGR_DHCP;
 
-/** DHCP 实例表，按接口占用 */
-static NETMGR_DHCP g_dhcp[NETMGR_DHCP_MAX];
-/** 实例表互斥锁，管理线程与收尾线程共同访问 */
-static pthread_mutex_t g_dhcp_lock = PTHREAD_MUTEX_INITIALIZER;
-/** 实例表状态变化条件，用于停止时等待收尾线程释放槽位 */
-static pthread_cond_t g_dhcp_cond = PTHREAD_COND_INITIALIZER;
+/** DHCP 管理上下文，承载本层全部状态 */
+typedef struct {
+    NETMGR_DHCP item[NETMGR_DHCP_MAX]; /**< 实例表，按接口占用槽位 */
+    pthread_mutex_t lock;              /**< 实例表互斥锁 */
+    pthread_cond_t cond;               /**< 槽位变化条件，释放槽位时广播 */
+} NETMGR_DHCP_MGR;
+
+/**
+ * DHCP 管理上下文（模块内单实例，本层状态全部收敛于此）
+ * 用途：保存 DHCP 实例表及其同步原语，供取址申请、停止与收尾释放共用
+ * 单位/范围：实例表固定 NETMGR_DHCP_MAX 个槽位；used 取 0/1；pid/fd 无效时为 -1
+ * 默认值依据：静态零初始化（全部槽位空闲），同步原语用静态初始化器
+ * 写入方/读取方：仲裁线程申请与释放，收尾线程只释放；均在 g_dhcp_mgr.lock 保护下访问
+ * 生命周期：仅内存态，随进程存在，槽位用完即回收复用
+ */
+static NETMGR_DHCP_MGR g_dhcp_mgr = {
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .cond = PTHREAD_COND_INITIALIZER,
+};
 
 /**
  * @brief DHCP 输出收尾线程：排空子进程输出、回收子进程并释放槽位
@@ -49,7 +60,7 @@ static pthread_cond_t g_dhcp_cond = PTHREAD_COND_INITIALIZER;
 static void* dhcp_reap(void* arg)
 {
     NETMGR_DHCP* item = (NETMGR_DHCP*)arg; /* 当前实例 */
-    char line[DHCP_LINE_LEN];              /* 单行输出缓冲 */
+    char line[256] = {0};              /* 单行输出缓冲 */
     FILE* fp = NULL;                       /* 管道流视图 */
     int status = 0;                        /* 子进程退出状态 */
     int no_lease = 0;                      /* 1=已判定未取得租约 */
@@ -88,12 +99,12 @@ static void* dhcp_reap(void* arg)
     }
 
     /* 收尾：释放槽位并通知等待方，后续同接口可再次取址 */
-    pthread_mutex_lock(&g_dhcp_lock);
+    pthread_mutex_lock(&g_dhcp_mgr.lock);
     item->used = 0;
     item->pid = -1;
     item->fd = -1;
-    pthread_cond_broadcast(&g_dhcp_cond);
-    pthread_mutex_unlock(&g_dhcp_lock);
+    pthread_cond_broadcast(&g_dhcp_mgr.cond);
+    pthread_mutex_unlock(&g_dhcp_mgr.lock);
     return NULL;
 }
 
@@ -121,28 +132,28 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
     }
 
     /* 第 1 步：查重并占位，占位后立即释放锁，避免阻塞其它链路取址 */
-    pthread_mutex_lock(&g_dhcp_lock);
+    pthread_mutex_lock(&g_dhcp_mgr.lock);
     for (i = 0; i < NETMGR_DHCP_MAX; ++i)
     {
-        if (g_dhcp[i].used &&
-            0 == strncmp(g_dhcp[i].ifname, ifname, sizeof(g_dhcp[i].ifname)))
+        if (g_dhcp_mgr.item[i].used &&
+            0 == strncmp(g_dhcp_mgr.item[i].ifname, ifname, sizeof(g_dhcp_mgr.item[i].ifname)))
         {
-            pthread_mutex_unlock(&g_dhcp_lock);
+            pthread_mutex_unlock(&g_dhcp_mgr.lock);
             return 0;
         }
-        if (!g_dhcp[i].used && idx < 0)
+        if (!g_dhcp_mgr.item[i].used && idx < 0)
             idx = i;
     }
     if (idx < 0)
     {
-        pthread_mutex_unlock(&g_dhcp_lock);
+        pthread_mutex_unlock(&g_dhcp_mgr.lock);
         NETMGR_ERR("DHCP 实例已满, 上限=%d", NETMGR_DHCP_MAX);
         return -NETMGRERR_DHCP;
     }
-    item = &g_dhcp[idx];
+    item = &g_dhcp_mgr.item[idx];
     item->used = 1;
     snprintf(item->ifname, sizeof(item->ifname), "%s", ifname);
-    pthread_mutex_unlock(&g_dhcp_lock);
+    pthread_mutex_unlock(&g_dhcp_mgr.lock);
 
     /* 第 2 步：组装参数，前台运行、取到或失败即退出 */
     args[0] = (char*)"udhcpc";
@@ -213,12 +224,12 @@ int netmgr_dhcp_start(const char* ifname, int timeout)
 fail:
     /* 任一步骤失败都回收到同一出口，先释放槽位再返回，避免槽位泄漏 */
     NETMGR_ERR("%s DHCP 启动失败, 回收实例槽位", ifname);
-    pthread_mutex_lock(&g_dhcp_lock);
+    pthread_mutex_lock(&g_dhcp_mgr.lock);
     item->used = 0;
     item->fd = -1;
     item->pid = -1;
-    pthread_cond_broadcast(&g_dhcp_cond);
-    pthread_mutex_unlock(&g_dhcp_lock);
+    pthread_cond_broadcast(&g_dhcp_mgr.cond);
+    pthread_mutex_unlock(&g_dhcp_mgr.lock);
     return -NETMGRERR_DHCP;
 }
 
@@ -230,7 +241,7 @@ fail:
 int netmgr_dhcp_stop(const char* ifname)
 {
     NETMGR_DHCP* item = NULL; /* 命中的实例 */
-    struct timespec ts;       /* 等待槽位释放的截止时间 */
+    struct timespec ts = {0};       /* 等待槽位释放的截止时间 */
     pid_t pid = -1;           /* 待结束的子进程号 */
     int found = 0;            /* 1=找到运行中的实例 */
     int i = 0;                /* 实例表下标，从 0 开始 */
@@ -242,19 +253,19 @@ int netmgr_dhcp_stop(const char* ifname)
     }
 
     /* 先在锁内取出实例与子进程号，结束进程时不能持锁，否则收尾线程无法释放槽位 */
-    pthread_mutex_lock(&g_dhcp_lock);
+    pthread_mutex_lock(&g_dhcp_mgr.lock);
     for (i = 0; i < NETMGR_DHCP_MAX; ++i)
     {
-        if (!g_dhcp[i].used)
+        if (!g_dhcp_mgr.item[i].used)
             continue;
-        if (0 != strncmp(g_dhcp[i].ifname, ifname, sizeof(g_dhcp[i].ifname)))
+        if (0 != strncmp(g_dhcp_mgr.item[i].ifname, ifname, sizeof(g_dhcp_mgr.item[i].ifname)))
             continue;
-        item = &g_dhcp[i];
+        item = &g_dhcp_mgr.item[i];
         pid = item->pid;
         found = 1;
         break;
     }
-    pthread_mutex_unlock(&g_dhcp_lock);
+    pthread_mutex_unlock(&g_dhcp_mgr.lock);
 
     if (!found)
         return 0;
@@ -268,17 +279,17 @@ int netmgr_dhcp_stop(const char* ifname)
     /* 等待收尾线程释放槽位：线程已 detach，只能以其占位状态判断是否收尾完成 */
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += DHCP_STOP_S;
-    pthread_mutex_lock(&g_dhcp_lock);
+    pthread_mutex_lock(&g_dhcp_mgr.lock);
     while (item->used)
     {
-        if (0 != pthread_cond_timedwait(&g_dhcp_cond, &g_dhcp_lock, &ts))
+        if (0 != pthread_cond_timedwait(&g_dhcp_mgr.cond, &g_dhcp_mgr.lock, &ts))
         {
-            pthread_mutex_unlock(&g_dhcp_lock);
+            pthread_mutex_unlock(&g_dhcp_mgr.lock);
             NETMGR_ERR("%s 等待 DHCP 收尾超时", ifname);
             return -NETMGRERR_TIMEOUT;
         }
     }
-    pthread_mutex_unlock(&g_dhcp_lock);
+    pthread_mutex_unlock(&g_dhcp_mgr.lock);
     return 0;
 }
 
@@ -298,16 +309,16 @@ int netmgr_dhcp_busy(const char* ifname)
         return 0;
     }
 
-    pthread_mutex_lock(&g_dhcp_lock);
+    pthread_mutex_lock(&g_dhcp_mgr.lock);
     for (i = 0; i < NETMGR_DHCP_MAX; ++i)
     {
-        if (!g_dhcp[i].used)
+        if (!g_dhcp_mgr.item[i].used)
             continue;
-        if (0 != strncmp(g_dhcp[i].ifname, ifname, sizeof(g_dhcp[i].ifname)))
+        if (0 != strncmp(g_dhcp_mgr.item[i].ifname, ifname, sizeof(g_dhcp_mgr.item[i].ifname)))
             continue;
         busy = 1;
         break;
     }
-    pthread_mutex_unlock(&g_dhcp_lock);
+    pthread_mutex_unlock(&g_dhcp_mgr.lock);
     return busy;
 }

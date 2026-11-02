@@ -15,8 +15,6 @@ extern "C" {
 
 /** 链路状态刷新周期（毫秒），netlink 事件到达时提前唤醒 */
 #define NETMGR_TICK_MS      200
-/** 链路拉起后等待就绪的最长时间（秒） */
-#define NETMGR_WAIT_S       20
 /** DNS 系统配置文件路径 */
 #define NETMGR_DNS_FILE     "/etc/resolv.conf"
 /** wpa_supplicant 控制接口目录 */
@@ -27,14 +25,8 @@ extern "C" {
 #define NETMGR_AP_CONF      "/tmp/netmgr_ap.conf"
 /** AP 模式 DHCP 服务配置文件路径 */
 #define NETMGR_UDHCP_CONF   "/tmp/netmgr_dhcpd.conf"
-/** 命令与路径缓冲长度 */
-#define NETMGR_CMD_LEN      128
-/** wpa 控制命令回复缓冲长度 */
-#define NETMGR_WPA_LEN      1024
-/** DHCP 实例数量上限（等于链路类型数） */
+/** DHCP 实例数量上限（等于链路类型数）；多处用作数组长度与循环边界，故具名 */
 #define NETMGR_DHCP_MAX     4
-/** 优先级取值上限 */
-#define NETMGR_PRIO_MAX     255
 /** 默认以太网接口名 */
 #define NETMGR_DEV_ETH      "eth0"
 /** 默认 WiFi 接口名 */

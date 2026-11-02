@@ -17,18 +17,10 @@ extern "C" {
 
 #include "net_mgr_err.h"
 
-/** 接口名字符串长度上限（含结束符） */
+/** 接口名字符串长度上限（含结束符）；被多处结构体成员与长度校验共用，故具名 */
 #define NETMGR_IF_LEN    16
-/** IPv4 点分十进制字符串长度上限（含结束符） */
+/** IPv4 点分十进制字符串长度上限（含结束符）；被多处结构体成员与长度校验共用，故具名 */
 #define NETMGR_IP_LEN    16
-/** SSID 长度上限（含结束符） */
-#define NETMGR_SSID_LEN  64
-/** 密码长度上限（含结束符） */
-#define NETMGR_PASS_LEN  64
-/** APN 长度上限（含结束符） */
-#define NETMGR_APN_LEN   32
-/** 拨号用户名长度上限（含结束符） */
-#define NETMGR_USER_LEN  32
 
 /** 链路类型 */
 typedef enum {
@@ -93,8 +85,8 @@ typedef struct {
     unsigned char prio;             /**< 优先级 0-255，小者优先，建议 20 */
     NETMGR_WMODE mode;              /**< STA 或 AP 模式 */
     char ifname[NETMGR_IF_LEN];     /**< 接口名，空则使用 wlan0 */
-    char ssid[NETMGR_SSID_LEN];     /**< STA：目标 SSID；AP：热点 SSID */
-    char passwd[NETMGR_PASS_LEN];   /**< 密码，空表示开放网络 */
+    char ssid[64];     /**< STA：目标 SSID；AP：热点 SSID */
+    char passwd[64];   /**< 密码，空表示开放网络 */
     char dns[NETMGR_IP_LEN];        /**< DNS 服务器，空则不参与下发 */
     char ap_ip[NETMGR_IP_LEN];      /**< AP 本机 IP，空则使用 192.168.4.1 */
     char ap_mask[NETMGR_IP_LEN];    /**< AP 掩码，空则使用 255.255.255.0 */
@@ -108,9 +100,9 @@ typedef struct {
     unsigned char prio;           /**< 优先级 0-255，小者优先，建议 30 */
     NETMGR_CMODE mode;            /**< 接入方式，当前仅 ECM 已实现 */
     char ifname[NETMGR_IF_LEN];   /**< 接口名，空则自动探测 usb0/wwan0/eth1 */
-    char apn[NETMGR_APN_LEN];     /**< APN（PPP 模式使用） */
-    char user[NETMGR_USER_LEN];   /**< 拨号用户名（PPP 模式使用） */
-    char passwd[NETMGR_PASS_LEN]; /**< 拨号密码（PPP 模式使用） */
+    char apn[32];     /**< APN（PPP 模式使用） */
+    char user[32];   /**< 拨号用户名（PPP 模式使用） */
+    char passwd[64]; /**< 拨号密码（PPP 模式使用） */
     char dns[NETMGR_IP_LEN];      /**< DNS 服务器，空则不参与下发 */
 } NETMGR_CELL_CONF;
 

@@ -10,9 +10,6 @@
 
 #include "net_mgr_def.h"
 
-/** 4G 网卡候选接口名，覆盖 ECM/RNDIS/NCM 驱动生成的常见命名 */
-static const char* const g_cell_devs[] = {"usb0", "wwan0", "eth1"};
-
 /** 4G 链路私有数据 */
 typedef struct {
     NETMGR_CELL_CONF conf; /**< 配置副本，生命周期与链路上下文一致 */
@@ -34,9 +31,10 @@ const NETMGR_OPS netmgr_cell_ops = {cell_open, cell_close, cell_refresh};
 static int cell_open(NETMGR_CTX* ctx, const void* conf)
 {
     const NETMGR_CELL_CONF* cfg = (const NETMGR_CELL_CONF*)conf; /* 入参配置视图 */
+    const char* const devs[] = {"usb0", "wwan0", "eth1"};         /* 4G 网卡候选接口名，ECM/RNDIS/NCM 常见命名 */
     NETMGR_CELL_PRIV* priv = NULL;                                /* 私有数据 */
     int ret = 0;                                                  /* 子步骤返回值 */
-    int dev_num = (int)(sizeof(g_cell_devs) / sizeof(g_cell_devs[0])); /* 候选接口数量 */
+    int dev_num = (int)(sizeof(devs) / sizeof(devs[0]));          /* 候选接口数量 */
 
     if (NULL == ctx || NULL == cfg)
     {
@@ -62,7 +60,7 @@ static int cell_open(NETMGR_CTX* ctx, const void* conf)
     /* 第 2 步：确定接口名，未指定时按候选列表自动探测 */
     if ('\0' == priv->conf.ifname[0])
     {
-        ret = netmgr_dev_find(g_cell_devs, dev_num, priv->conf.ifname,
+        ret = netmgr_dev_find(devs, dev_num, priv->conf.ifname,
                               (int)sizeof(priv->conf.ifname));
         if (ret < 0)
         {

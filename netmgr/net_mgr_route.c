@@ -16,16 +16,26 @@
 
 #include "net_mgr_def.h"
 
-/** netlink 请求属性区缓冲长度 */
-#define ROUTE_REQ_LEN 256
-/** netlink 回复缓冲长度 */
-#define ROUTE_RSP_LEN 4096
+/** 路由层上下文，承载本层全部状态 */
+typedef struct {
+    char buf[4096]; /**< RTM_GETROUTE 请求与内核 dump 回复的收发缓冲 */
+} NETMGR_RT_CTX;
+
+/**
+ * 路由层上下文（模块内单实例，本层状态全部收敛于此）
+ * 用途：保存路由 request/reply 收发缓冲，供 route_send 与 route_dump 复用
+ * 单位/范围：缓冲固定 4096 字节（单次 dump 分片小于该值）
+ * 默认值依据：静态零初始化；4096 为 netlink 单次读取常用长度，且超栈上限故下沉
+ * 写入方/读取方：仅仲裁线程经 route_send/route_dump 串行读写
+ * 生命周期：仅内存态，随进程存在，不持久化
+ */
+static NETMGR_RT_CTX g_rt_ctx;
 
 /** netlink 路由请求布局：消息头 + 路由消息体 + 属性区 */
 typedef struct {
     struct nlmsghdr nlh;      /**< netlink 消息头 */
     struct rtmsg rtm;         /**< 路由消息体 */
-    char attr[ROUTE_REQ_LEN]; /**< 属性区，按需追加网关/接口/metric */
+    char attr[256]; /**< 属性区，按需追加网关/接口/metric */
 } NETMGR_RREQ;
 
 /**
@@ -87,8 +97,7 @@ static int route_attr(struct nlmsghdr* nlh, int type, const void* data, int len,
  */
 static int route_send(int fd, struct nlmsghdr* nlh)
 {
-    struct sockaddr_nl addr;   /* 内核 netlink 地址 */
-    char rsp[ROUTE_RSP_LEN];   /* 回复缓冲 */
+    struct sockaddr_nl addr = {0};   /* 内核 netlink 地址 */
     struct nlmsghdr* msg = NULL; /* 回复消息视图 */
     struct nlmsgerr* err = NULL; /* 错误消息视图 */
     int len = 0;               /* 本轮有效长度 */
@@ -100,7 +109,6 @@ static int route_send(int fd, struct nlmsghdr* nlh)
         return -NETMGRERR_PARAM;
     }
 
-    memset(&addr, 0, sizeof(addr));
     addr.nl_family = AF_NETLINK;
     if (0 > sendto(fd, nlh, nlh->nlmsg_len, 0, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
@@ -109,7 +117,7 @@ static int route_send(int fd, struct nlmsghdr* nlh)
     }
 
     /* 等待 ACK：NLMSG_ERROR 中 error 为 0 表示内核执行成功 */
-    n = recv(fd, rsp, sizeof(rsp), 0);
+    n = recv(fd, g_rt_ctx.buf, sizeof(g_rt_ctx.buf), 0);
     if (n <= 0)
     {
         NETMGR_ERR("接收路由确认失败, errno=%d", errno);
@@ -117,7 +125,7 @@ static int route_send(int fd, struct nlmsghdr* nlh)
     }
 
     len = (int)n;
-    for (msg = (struct nlmsghdr*)rsp; NLMSG_OK(msg, len); msg = NLMSG_NEXT(msg, len))
+    for (msg = (struct nlmsghdr*)g_rt_ctx.buf; NLMSG_OK(msg, len); msg = NLMSG_NEXT(msg, len))
     {
         if (NLMSG_ERROR != msg->nlmsg_type)
             continue;
@@ -143,8 +151,8 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
 {
     struct rtmsg* rtm = NULL;  /* 路由消息体 */
     struct rtattr* rta = NULL; /* 属性视图 */
-    struct in_addr gw;         /* 网关地址 */
-    char ifname[NETMGR_IF_LEN]; /* 出口接口名 */
+    struct in_addr gw = {0};         /* 网关地址 */
+    char ifname[NETMGR_IF_LEN] = {0}; /* 出口接口名 */
     int rta_len = 0;           /* 剩余属性长度 */
     int metric = 0;            /* 路由 metric */
     int oif = 0;               /* 出口接口索引 */
@@ -155,8 +163,6 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
     if (AF_INET != rtm->rtm_family || RT_TABLE_MAIN != (int)rtm->rtm_table || 0 != rtm->rtm_dst_len)
         return;
 
-    memset(&gw, 0, sizeof(gw));
-    memset(ifname, 0, sizeof(ifname));
     rta = RTM_RTA(rtm);
     rta_len = (int)RTM_PAYLOAD(nlh);
     for (; RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len))
@@ -213,10 +219,9 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
  */
 static int route_dump(const char* filter, NETMGR_ROUTE* best)
 {
-    struct sockaddr_nl addr;     /* 内核 netlink 地址 */
+    struct sockaddr_nl addr = {0};     /* 内核 netlink 地址 */
     struct nlmsghdr* nlh = NULL; /* 请求消息视图 */
     struct rtmsg* rtm = NULL;    /* 请求路由消息体 */
-    char rsp[ROUTE_RSP_LEN];     /* 收发缓冲 */
     int fd = -1;                 /* netlink socket */
     int len = 0;                 /* 本轮有效长度 */
     int done = 0;                /* 1=dump 结束 */
@@ -235,8 +240,7 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
         return fd;
 
     /* 构造 RTM_GETROUTE dump 请求，一次性取回主路由表 */
-    memset(rsp, 0, sizeof(rsp));
-    nlh = (struct nlmsghdr*)rsp;
+    nlh = (struct nlmsghdr*)g_rt_ctx.buf;
     nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
     nlh->nlmsg_type = RTM_GETROUTE;
     nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
@@ -244,7 +248,6 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
     rtm = (struct rtmsg*)NLMSG_DATA(nlh);
     rtm->rtm_family = AF_INET;
 
-    memset(&addr, 0, sizeof(addr));
     addr.nl_family = AF_NETLINK;
     if (0 > sendto(fd, nlh, nlh->nlmsg_len, 0, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
@@ -256,7 +259,7 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
     /* 持续接收直到 NLMSG_DONE，逐条筛选默认路由 */
     while (!done)
     {
-        n = recv(fd, rsp, sizeof(rsp), 0);
+        n = recv(fd, g_rt_ctx.buf, sizeof(g_rt_ctx.buf), 0);
         if (n <= 0)
         {
             NETMGR_ERR("接收路由查询结果失败, errno=%d", errno);
@@ -265,7 +268,7 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
         }
 
         len = (int)n;
-        for (nlh = (struct nlmsghdr*)rsp; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len))
+        for (nlh = (struct nlmsghdr*)g_rt_ctx.buf; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len))
         {
             if (NLMSG_DONE == nlh->nlmsg_type)
             {
@@ -298,8 +301,8 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
  */
 int netmgr_route_add(const char* ifname, const char* gate, int metric)
 {
-    NETMGR_RREQ req;          /* 请求缓冲 */
-    struct in_addr gw;        /* 网关地址 */
+    NETMGR_RREQ req = {0};          /* 请求缓冲 */
+    struct in_addr gw = {0};        /* 网关地址 */
     unsigned int ifindex = 0; /* 出口接口索引 */
     int fd = -1;              /* netlink socket */
     int ret = 0;              /* 子步骤返回值 */
@@ -318,7 +321,6 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
     }
 
     /* 构造默认路由：dst 长度为 0 即 default，metric 由 RTA_PRIORITY 承载 */
-    memset(&req, 0, sizeof(req));
     req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
     req.nlh.nlmsg_type = RTM_NEWROUTE;
     req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK;
@@ -330,7 +332,6 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
     req.rtm.rtm_type = RTN_UNICAST;
     req.rtm.rtm_dst_len = 0;
 
-    memset(&gw, 0, sizeof(gw));
     if (1 != inet_pton(AF_INET, gate, &gw))
     {
         NETMGR_ERR("转换网关 %s 失败", gate);
@@ -370,8 +371,8 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
  */
 int netmgr_route_del(const char* ifname, const char* gate, int metric)
 {
-    NETMGR_RREQ req;          /* 请求缓冲 */
-    struct in_addr gw;        /* 网关地址 */
+    NETMGR_RREQ req = {0};          /* 请求缓冲 */
+    struct in_addr gw = {0};        /* 网关地址 */
     unsigned int ifindex = 0; /* 出口接口索引 */
     int fd = -1;              /* netlink socket */
     int ret = 0;              /* 子步骤返回值 */
@@ -390,7 +391,6 @@ int netmgr_route_del(const char* ifname, const char* gate, int metric)
     }
 
     /* 删除时必须带 metric 与网关，否则可能误删其它链路的默认路由 */
-    memset(&req, 0, sizeof(req));
     req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
     req.nlh.nlmsg_type = RTM_DELROUTE;
     req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
@@ -402,7 +402,6 @@ int netmgr_route_del(const char* ifname, const char* gate, int metric)
     req.rtm.rtm_type = RTN_UNICAST;
     req.rtm.rtm_dst_len = 0;
 
-    memset(&gw, 0, sizeof(gw));
     if (1 != inet_pton(AF_INET, gate, &gw))
     {
         NETMGR_ERR("转换网关 %s 失败", gate);

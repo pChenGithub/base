@@ -15,21 +15,27 @@
 
 #include "net_mgr_def.h"
 
-/** 事件接收缓冲长度 */
-#define EVENT_RSP_LEN 4096
 /** 接收超时时间（微秒），用于周期性检查退出标志 */
 #define EVENT_WAIT_US 500000
 
-/** 事件监听上下文 */
+/** 事件监听上下文，承载本层全部状态 */
 typedef struct {
-    int fd;             /**< netlink socket，-1 表示未打开 */
+    int fd;               /**< netlink socket，-1 表示未打开 */
     volatile int running; /**< 1=接收线程运行中 */
-    pthread_t tid;      /**< 接收线程 */
-    void (*wake)(void); /**< 事件到达唤醒回调，可为空 */
+    pthread_t tid;        /**< 接收线程 */
+    void (*wake)(void);   /**< 事件到达唤醒回调，可为空 */
+    char buf[4096];       /**< 事件接收缓冲，承载 netlink 单次事件消息 */
 } NETMGR_EVENT;
 
-/** 事件监听上下文，模块内单实例 */
-static NETMGR_EVENT g_event = {-1, 0, 0, NULL};
+/**
+ * 事件监听上下文（模块内单实例，本层状态全部收敛于此）
+ * 用途：保存 netlink socket、接收线程句柄、运行标志、唤醒回调与接收缓冲
+ * 单位/范围：fd 为 socket 描述符或 -1；running 取 0/1；buf 固定 4096 字节
+ * 默认值依据：未启动态（fd=-1、running=0、无唤醒回调）；4096 为 netlink 单次读取常用长度
+ * 写入方/读取方：open/close 写控制字段，事件线程写 buf 并解析；仅本文件访问
+ * 生命周期：仅内存态，随进程存在，close 后控制字段复位为未启动态
+ */
+static NETMGR_EVENT g_event = {.fd = -1};
 
 /**
  * @brief 事件接收线程：把内核事件转换为一次唤醒
@@ -40,7 +46,6 @@ static void* event_thread(void* arg)
 {
     NETMGR_EVENT* ev = (NETMGR_EVENT*)arg; /* 事件监听上下文 */
     struct nlmsghdr* nlh = NULL;           /* 消息视图 */
-    char buf[EVENT_RSP_LEN];               /* 接收缓冲 */
     int len = 0;                           /* 本轮有效长度 */
     ssize_t n = 0;                         /* 接收字节数 */
 
@@ -49,7 +54,7 @@ static void* event_thread(void* arg)
 
     while (ev->running)
     {
-        n = recv(ev->fd, buf, sizeof(buf), 0);
+        n = recv(ev->fd, ev->buf, sizeof(ev->buf), 0);
         if (n <= 0)
         {
             /* 超时用于周期性检查退出标志，其余错误记录后继续 */
@@ -63,7 +68,7 @@ static void* event_thread(void* arg)
         }
 
         len = (int)n;
-        for (nlh = (struct nlmsghdr*)buf; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len))
+        for (nlh = (struct nlmsghdr*)ev->buf; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len))
         {
             switch (nlh->nlmsg_type)
             {
@@ -91,8 +96,8 @@ static void* event_thread(void* arg)
  */
 int netmgr_event_open(void (*wake)(void))
 {
-    struct sockaddr_nl addr; /* 本地 netlink 地址 */
-    struct timeval tv;       /* 接收超时 */
+    struct sockaddr_nl addr = {0}; /* 本地 netlink 地址 */
+    struct timeval tv = {0};       /* 接收超时 */
     int fd = -1;             /* netlink socket */
 
     if (g_event.running)
@@ -105,7 +110,6 @@ int netmgr_event_open(void (*wake)(void))
         return -NETMGRERR_SOCKET;
     }
 
-    memset(&addr, 0, sizeof(addr));
     addr.nl_family = AF_NETLINK;
     /* 监听链路、IPv4 地址与路由变化：路由变化用于感知外部改写默认路由 */
     addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV4_ROUTE;

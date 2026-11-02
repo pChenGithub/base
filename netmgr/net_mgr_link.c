@@ -52,7 +52,7 @@ int netmgr_link_exist(const char* ifname)
  */
 int netmgr_link_up(const char* ifname)
 {
-    struct ifreq req;  /* ioctl 参数：接口名与接口标志 */
+    struct ifreq req = {0};  /* ioctl 参数：接口名与接口标志 */
     int fd = -1;       /* 临时控制 socket */
     int ret = 0;       /* ioctl 返回值 */
     int err = 0;       /* 失败时的 errno 快照 */
@@ -67,7 +67,6 @@ int netmgr_link_up(const char* ifname)
     if (fd < 0)
         return 0;
 
-    memset(&req, 0, sizeof(req));
     strncpy(req.ifr_name, ifname, IFNAMSIZ - 1);
     ret = ioctl(fd, SIOCGIFFLAGS, &req);
     err = errno;
@@ -88,7 +87,7 @@ int netmgr_link_up(const char* ifname)
  */
 int netmgr_link_enable(const char* ifname, int on)
 {
-    struct ifreq req;  /* ioctl 参数：接口名与接口标志 */
+    struct ifreq req = {0};  /* ioctl 参数：接口名与接口标志 */
     int fd = -1;       /* 临时控制 socket */
     int ret = 0;       /* ioctl 返回值 */
     int err = 0;       /* 失败时的 errno 快照 */
@@ -103,7 +102,6 @@ int netmgr_link_enable(const char* ifname, int on)
     if (fd < 0)
         return fd;
 
-    memset(&req, 0, sizeof(req));
     strncpy(req.ifr_name, ifname, IFNAMSIZ - 1);
     /* 先读出原有标志再改：直接赋值会抹掉接口上其它标志位 */
     if (ioctl(fd, SIOCGIFFLAGS, &req) < 0)
@@ -138,7 +136,7 @@ int netmgr_link_enable(const char* ifname, int on)
  */
 int netmgr_link_ip(const char* ifname, char* ip, int len)
 {
-    struct ifreq req;                 /* ioctl 参数：接口名与接口地址 */
+    struct ifreq req = {0};                 /* ioctl 参数：接口名与接口地址 */
     struct sockaddr_in* addr = NULL;  /* 接口地址视图 */
     int fd = -1;                      /* 临时控制 socket */
     int ret = 0;                      /* ioctl 返回值 */
@@ -155,7 +153,6 @@ int netmgr_link_ip(const char* ifname, char* ip, int len)
     if (fd < 0)
         return fd;
 
-    memset(&req, 0, sizeof(req));
     strncpy(req.ifr_name, ifname, IFNAMSIZ - 1);
     ret = ioctl(fd, SIOCGIFADDR, &req);
     err = errno;
@@ -186,7 +183,7 @@ int netmgr_link_ip(const char* ifname, char* ip, int len)
  */
 int netmgr_link_setip(const char* ifname, const char* ip)
 {
-    struct ifreq req;         /* ioctl 参数：接口名与待设地址 */
+    struct ifreq req = {0};         /* ioctl 参数：接口名与待设地址 */
     struct sockaddr_in* addr = NULL; /* 待设地址视图 */
     int fd = -1;              /* 临时控制 socket */
     int ret = 0;              /* ioctl 返回值 */
@@ -203,7 +200,6 @@ int netmgr_link_setip(const char* ifname, const char* ip)
     if (fd < 0)
         return fd;
 
-    memset(&req, 0, sizeof(req));
     strncpy(req.ifr_name, ifname, IFNAMSIZ - 1);
     addr = (struct sockaddr_in*)&req.ifr_addr;
     addr->sin_family = AF_INET;
@@ -233,7 +229,7 @@ int netmgr_link_setip(const char* ifname, const char* ip)
  */
 int netmgr_link_setmask(const char* ifname, const char* mask)
 {
-    struct ifreq req;         /* ioctl 参数：接口名与待设掩码 */
+    struct ifreq req = {0};         /* ioctl 参数：接口名与待设掩码 */
     struct sockaddr_in* addr = NULL; /* 待设掩码视图 */
     int fd = -1;              /* 临时控制 socket */
     int ret = 0;              /* ioctl 返回值 */
@@ -249,7 +245,6 @@ int netmgr_link_setmask(const char* ifname, const char* mask)
     if (fd < 0)
         return fd;
 
-    memset(&req, 0, sizeof(req));
     strncpy(req.ifr_name, ifname, IFNAMSIZ - 1);
     addr = (struct sockaddr_in*)&req.ifr_addr;
     addr->sin_family = AF_INET;
@@ -278,7 +273,7 @@ int netmgr_link_setmask(const char* ifname, const char* mask)
  */
 int netmgr_ip_valid(const char* ip)
 {
-    struct in_addr addr; /* 转换结果容器 */
+    struct in_addr addr = {0}; /* 转换结果容器 */
 
     if (NULL == ip || '\0' == ip[0])
     {
@@ -333,7 +328,7 @@ int netmgr_dev_find(const char* const* names, int count, char* out, int len)
  */
 int netmgr_link_ready(NETMGR_CTX* ctx)
 {
-    NETMGR_ROUTE route; /* 该接口上的默认路由 */
+    NETMGR_ROUTE route = {0}; /* 该接口上的默认路由 */
     int ret = 0;        /* 子步骤返回值 */
 
     if (NULL == ctx)
@@ -363,7 +358,6 @@ int netmgr_link_ready(NETMGR_CTX* ctx)
     }
 
     /* 第 3 步：默认网关，由 DHCP 客户端写入路由表，此处回查 */
-    memset(&route, 0, sizeof(route));
     ret = netmgr_route_dev(ctx->ifname, &route);
     if (ret < 0)
     {

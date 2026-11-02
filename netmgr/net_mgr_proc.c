@@ -20,8 +20,6 @@
 
 /** 进程文件系统根目录 */
 #define PROC_ROOT     "/proc"
-/** 进程名比较缓冲长度 */
-#define PROC_NAME_LEN 64
 
 /**
  * @brief 读取指定进程号对应的进程名
@@ -32,7 +30,7 @@
  */
 static int proc_read_name(int pid, char* name, int len)
 {
-    char path[NETMGR_CMD_LEN]; /* /proc/<pid>/comm 路径 */
+    char path[128] = {0}; /* /proc/<pid>/comm 路径 */
     FILE* fp = NULL;           /* 进程名文件句柄 */
     int ok = 0;                /* 读取结果标志 */
 
@@ -62,7 +60,7 @@ int netmgr_proc_exist(const char* name)
 {
     DIR* dir = NULL;           /* /proc 目录句柄 */
     struct dirent* ent = NULL; /* 目录项 */
-    char comm[PROC_NAME_LEN];  /* 进程名缓冲 */
+    char comm[64] = {0};  /* 进程名缓冲 */
     int pid = 0;               /* 当前目录项对应的进程号 */
     int found = 0;             /* 是否已找到目标进程 */
 
@@ -107,7 +105,7 @@ int netmgr_proc_kill(const char* name)
 {
     DIR* dir = NULL;           /* /proc 目录句柄 */
     struct dirent* ent = NULL; /* 目录项 */
-    char comm[PROC_NAME_LEN];  /* 进程名缓冲 */
+    char comm[64] = {0};  /* 进程名缓冲 */
     int pid = 0;               /* 当前目录项对应的进程号 */
 
     if (NULL == name || '\0' == name[0])
@@ -150,7 +148,7 @@ int netmgr_proc_kill(const char* name)
  */
 int netmgr_proc_exec(const char* fmt, ...)
 {
-    char cmd[NETMGR_CMD_LEN]; /* 完整命令行 */
+    char cmd[128] = {0}; /* 完整命令行 */
     va_list ap;               /* 可变参数表 */
     int len = 0;              /* 格式化结果长度 */
     int status = 0;           /* 命令退出状态 */

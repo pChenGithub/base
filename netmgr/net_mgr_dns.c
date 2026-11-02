@@ -17,7 +17,7 @@
  */
 int netmgr_dns_apply(const char* dns)
 {
-    char tmp[NETMGR_CMD_LEN]; /* 临时文件路径 */
+    char tmp[128] = {0}; /* 临时文件路径 */
     FILE* fp = NULL;          /* 临时文件句柄 */
     int empty = 0;            /* 1=本次为清空 DNS */
     int err = 0;              /* 失败时的 errno 快照 */

@@ -217,13 +217,12 @@ static int demo_parse(NETMGR_CONF* conf, int argc, char* argv[])
  */
 int main(int argc, char* argv[])
 {
-    NETMGR_CONF conf;                    /* 总配置 */
-    NETMGR_LINK list[NETMGR_TYPE_MAX];   /* 状态快照数组 */
+    NETMGR_CONF conf = {0};                    /* 总配置 */
+    NETMGR_LINK list[NETMGR_TYPE_MAX] = {0};   /* 状态快照数组 */
     int num = 0;                         /* 快照条数 */
     int ret = 0;                         /* 接口返回值 */
     int i = 0;                           /* 打印轮次，从 0 开始 */
 
-    memset(&conf, 0, sizeof(conf));
     /* 默认优先级：以太网最优，其次 WiFi，最后 4G */
     conf.eth.prio = 10;
     conf.wifi.prio = 20;
