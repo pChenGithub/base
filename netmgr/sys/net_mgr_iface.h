@@ -3,6 +3,12 @@
  * @brief netmgr 系统适配层：网络接口操作（sys 层，可独立使用）
  * @details 全部基于 ioctl(SIOCGIFFLAGS/SIOCGIFADDR/SIOCSIFADDR/SIOCSIFNETMASK) 实现，
  *          仅依赖内核，不引用 netmgr 上层与 base 内其它自研模块。
+ *
+ * 使用约束（独立调用方须知）：
+ * 1) 单实例：无文件级状态，可并发调用；
+ * 2) 线程：本层不起线程，全部接口同步返回；
+ * 3) 权限：enable/setip/setmask 需 CAP_NET_ADMIN，查询接口无需特权；
+ * 4) 外部依赖：仅内核 ioctl。
  */
 #ifndef __NET_MGR_IFACE_H__
 #define __NET_MGR_IFACE_H__

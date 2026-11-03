@@ -3,6 +3,12 @@
  * @brief netmgr 系统适配层：默认路由管理（sys 层，可独立使用）
  * @details 基于 rtnetlink 下发、删除与查询带 metric 的 IPv4 默认路由；
  *          metric 由 RTA_PRIORITY 承载，ioctl(SIOCADDRT) 无法可靠表达该能力。
+ *
+ * 使用约束（独立调用方须知）：
+ * 1) 单实例：查询共用一份接收缓冲，多线程并发调用需由调用方串行化；
+ * 2) 线程：本层不起线程，add/del 为同步 netlink 请求；
+ * 3) 权限：add/del 需 CAP_NET_ADMIN，act/dev 查询无需特权；
+ * 4) 外部依赖：内核 NETLINK_ROUTE。
  */
 #ifndef __NET_MGR_ROUTE_H__
 #define __NET_MGR_ROUTE_H__
@@ -11,7 +17,14 @@
 extern "C" {
 #endif
 
-#include "net_mgr_ctx.h"
+#include "net_mgr_types.h"
+
+/** 默认路由条目 */
+typedef struct {
+    char ifname[NETMGR_IF_LEN]; /**< 出口接口名 */
+    char gate[NETMGR_IP_LEN];   /**< 网关地址 */
+    int metric;                 /**< 路由 metric，越小越优先 */
+} NETMGR_ROUTE;
 
 /* ===== 查询 ===== */
 
