@@ -1,0 +1,201 @@
+/**
+ * @file net_mgr_wpa.h
+ * @brief netmgr 系统适配层：wpa_supplicant 控制接口（sys 层，可独立使用）
+ * @details 直连 wpa_supplicant 的 unix 控制接口（CTRL-REQ/CTRL-RSP 最小协议），
+ *          提供「连接 / 断开 / 状态查询 / 扫描 / 扫描结果」五类能力与 wpa 事件监听，
+ *          只依赖 common 与系统 socket，可脱离 netmgr 上层单独使用。
+ *          职责边界（硬性）：wpa_supplicant 的启动/结束与进程生命周期归调用方编排，
+ *          本层只提供 conf_write / wait / open / close 四个挂接点，不拉起、不杀进程，
+ *          也不处理 DHCP 与路由。
+ *          网络配置由调用方每次 connect 下发、不持久化；disconnect 会清空 wpa 内网络配置，
+ *          避免残留网络被自动重连。
+ *
+ * 使用约束（独立调用方须知）：
+ * 1) 单实例：进程内维护一份控制通道，同一时刻只服务一个接口；
+ * 2) 线程：命令接口全部同步返回；事件通道（netmgr_wpa_event_open）另起 1 个接收线程，
+ *    回调在该线程上下文执行，回调内不可长时间阻塞；
+ * 3) 权限：连接控制接口需与 wpa_supplicant 同用户或具备访问权限；
+ * 4) 外部依赖：wpa_supplicant 已在运行并创建 /var/run/wpa_supplicant/<ifname>。
+ */
+#ifndef __NET_MGR_WPA_H__
+#define __NET_MGR_WPA_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "net_mgr_limits.h"
+
+/** SSID 最大长度（含结束符） */
+#define NETMGR_SSID_LEN   64
+/** BSSID 文本长度（xx:xx:xx:xx:xx:xx 含结束符） */
+#define NETMGR_BSSID_LEN  18
+/** 扫描结果缓存条数上限；超出部分丢弃，避免动态分配 */
+#define NETMGR_SCAN_MAX   16
+
+/** wpa_supplicant 工作状态（由 wpa_state 映射） */
+typedef enum {
+    NETMGR_WPA_UNKNOWN = 0, /**< 未知：未取到状态或状态文本无法识别 */
+    NETMGR_WPA_SCANNING,    /**< 扫描中 */
+    NETMGR_WPA_ASSOCIATING, /**< 关联或四次握手进行中 */
+    NETMGR_WPA_COMPLETED,   /**< 已关联热点并完成四次握手 */
+    NETMGR_WPA_DISCONNECTED /**< 已断开或未连接热点 */
+} NETMGR_WPA_STATE;
+
+/** WiFi 扫描到的接入点 */
+typedef struct {
+    char ssid[NETMGR_SSID_LEN];  /**< 热点名称，隐藏 SSID 时为空串 */
+    char bssid[NETMGR_BSSID_LEN];/**< BSSID，形如 xx:xx:xx:xx:xx:xx */
+    int freq;                    /**< 频率 MHz */
+    int signal;                  /**< 信号强度 dBm（负值，越大越好） */
+    int secure;                  /**< 1=加密，0=开放 */
+} NETMGR_WIFI_AP;
+
+/** 当前 WiFi 连接信息 */
+typedef struct {
+    int connected;                   /**< 1=已关联热点 */
+    char ssid[NETMGR_SSID_LEN];      /**< 当前 SSID */
+    char bssid[NETMGR_BSSID_LEN];    /**< 当前 BSSID */
+    int freq;                        /**< 频率 MHz */
+    int signal;                      /**< 信号强度 dBm */
+    int linkSpeed;                   /**< 协商速率 Mbps，未知为 0 */
+} NETMGR_WIFI_INFO;
+
+/** wpa 事件类别（CTRL-EVENT-* 映射；无法识别的事件不上报） */
+typedef enum {
+    NETMGR_WEV_DISCONNECTED = 0, /**< 已断开（含断开原因码） */
+    NETMGR_WEV_CONNECTED,        /**< 关联完成（四次握手通过） */
+    NETMGR_WEV_SCAN_DONE,        /**< 一轮扫描结束，结果可经 netmgr_wpa_scan_result 读取 */
+    NETMGR_WEV_ASSOC_REJECT,     /**< 关联被拒（含状态码） */
+    NETMGR_WEV_TERMINATING       /**< wpa_supplicant 进程退出，事件通道随之失效 */
+} NETMGR_WEV_TYPE;
+
+/**
+ * 单条 wpa 事件内容
+ * @note 字段按事件类别有效，未涉及的字段为 0 或空串：
+ *       CONNECTED    ：ssid、bssid
+ *       DISCONNECTED ：bssid、reason（断开原因码）
+ *       ASSOC_REJECT ：bssid、status（状态码）
+ *       其余类别仅 type 有效
+ */
+typedef struct {
+    NETMGR_WEV_TYPE type;         /**< 事件类别 */
+    int reason;                   /**< 断开原因码（仅 DISCONNECTED 有效） */
+    int status;                   /**< 关联拒绝状态码（仅 ASSOC_REJECT 有效） */
+    char ssid[NETMGR_SSID_LEN];   /**< 相关 SSID，无则为空串 */
+    char bssid[NETMGR_BSSID_LEN]; /**< 相关 BSSID，无则为空串 */
+} NETMGR_WEV;
+
+/**
+ * @brief wpa 事件回调，在事件接收线程上下文执行
+ * @param ev   事件内容，仅在回调期间有效，不可保存指针
+ * @param user 注册回调时传入的用户指针，可为空
+ * @return 0 继续监听；返回值当前被忽略，不影响接收线程
+ */
+typedef int (*netmgr_wev_cb)(const NETMGR_WEV* ev, void* user);
+
+/* ===== 控制通道 ===== */
+
+/**
+ * @brief 写 wpa_supplicant 最小配置（控制接口目录、调用方指定国家码）
+ * @param path    配置文件输出路径，不可为空
+ * @param country 国家码（如 "CN"），NULL 或空串表示不写 country 行（由 wpa 默认 regulatory 决定）
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_conf_write(const char* path, const char* country);
+
+/**
+ * @brief 等待 wpa_supplicant 控制接口出现
+ * @param ifname 接口名，不可为空
+ * @param timeoutMs 等待超时（毫秒），0 表示使用默认超时
+ * @return 0 就绪；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_wait(const char* ifname, int timeoutMs);
+
+/**
+ * @brief 建立控制通道（已连接同一接口时直接返回成功）
+ * @param ifname 接口名，不可为空
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_open(const char* ifname);
+
+/**
+ * @brief 查询控制通道是否已打开
+ * @return 1 已打开；0 未打开
+ */
+int netmgr_wpa_is_open(void);
+
+/**
+ * @brief 关闭控制通道（未打开时直接返回）
+ */
+void netmgr_wpa_close(void);
+
+/* ===== 协议操作 ===== */
+
+/**
+ * @brief 连接指定热点（内部完成网络配置、使能、选中与关联完成等待）
+ * @param ssid   热点名称，不可为空
+ * @param passwd 密码，空串表示开放网络
+ * @param timeoutMs 关联完成等待超时（毫秒），0 表示使用默认超时
+ * @return 0 已关联；负值为 NETMGRERR_* 错误码（通道未打开返回 -NETMGRERR_STATE）
+ */
+int netmgr_wpa_connect(const char* ssid, const char* passwd, int timeoutMs);
+
+/**
+ * @brief 断开当前热点并清空 wpa 内网络配置（重连需重新 connect）
+ * @return 0 成功（wpa 未连接热点时同样返回 0）；负值为 NETMGRERR_* 错误码
+ *         （通道未打开返回 -NETMGRERR_STATE）
+ */
+int netmgr_wpa_disconnect(void);
+
+/**
+ * @brief 读取当前工作状态
+ * @param state 输出状态，不可为空
+ * @return 0 成功；负值为 NETMGRERR_* 错误码（通道未打开返回 -NETMGRERR_STATE）
+ */
+int netmgr_wpa_state(NETMGR_WPA_STATE* state);
+
+/**
+ * @brief 读取当前连接信息（SSID、BSSID、频率、信号、速率）
+ * @param info 输出连接信息，不可为空
+ * @return 0 成功（未连接时 connected=0 其余为空）；负值为 NETMGRERR_* 错误码
+ *         （通道未打开返回 -NETMGRERR_STATE）
+ */
+int netmgr_wpa_status(NETMGR_WIFI_INFO* info);
+
+/**
+ * @brief 触发一次扫描，并等待扫描结束
+ * @param timeoutMs 扫描结束等待超时（毫秒），0 表示使用默认超时
+ * @return 0 扫描完成；负值为 NETMGRERR_* 错误码（超时返回 -NETMGRERR_TIMEOUT，
+ *         此时扫描仍在后台进行、结果仍可读取）
+ */
+int netmgr_wpa_scan(int timeoutMs);
+
+/**
+ * @brief 读取最近一次扫描结果
+ * @param list 输出数组，容量由 *num 传入
+ * @param num  入参为数组容量，出参为实际写入条数
+ * @return 0 成功；负值为 NETMGRERR_* 错误码（结果超出接收缓冲返回 -NETMGRERR_BUFF）
+ */
+int netmgr_wpa_scan_result(NETMGR_WIFI_AP* list, int* num);
+
+/* ===== 事件通道 ===== */
+
+/**
+ * @brief 启动 wpa 事件监听（须先 netmgr_wpa_open 建立命令通道；重复调用直接返回成功）
+ * @param cb   事件回调，可为空（只订阅不关心内容时）
+ * @param user 回调透传的用户指针，可为空
+ * @return 0 成功；负值为 NETMGRERR_* 错误码（通道未打开返回 -NETMGRERR_STATE）
+ */
+int netmgr_wpa_event_open(netmgr_wev_cb cb, void* user);
+
+/**
+ * @brief 停止 wpa 事件监听并回收接收线程（未启动时同样返回 0）
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_event_close(void);
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* __NET_MGR_WPA_H__ */
