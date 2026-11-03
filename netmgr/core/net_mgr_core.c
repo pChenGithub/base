@@ -1,78 +1,96 @@
 /**
  * @file net_mgr_core.c
  * @brief netmgr 仲裁层实现：链路装配、优先级仲裁、默认路由同步与事件分发
- * @details 仲裁模型：
- *          1) 周期性（或事件到达时提前）刷新各链路自身状态 DOWN/READY；
- *          2) 就绪链路按其优先级下发默认路由，metric 取优先级值，由内核选路；
- *          3) 就绪链路中优先级最高者标记为 ACTIVE，仅用于状态上报与 DNS 下发。
+ * @details 本层直接基于 sys 层能力实现，不再设链路实现层：
+ *          1) 三条链路的 open/close/refresh 与就绪判定在本层内部（net_mgr_eth/wifi/cell/link.c）；
+ *          2) 本层不创建线程：netlink 事件由 sys 事件回调直接驱动一轮仲裁，
+ *             不产生事件的状态变化由业务周期调用 netmgr_core_poll 驱动；
+ *          3) 就绪链路按其优先级下发默认路由，metric 取优先级值，由内核选路；
+ *          4) 就绪链路中优先级最高者标记为 ACTIVE，仅用于状态上报与 DNS 下发。
  */
 #include "net_mgr_core.h"
 
-#include "net_mgr_cell.h"
+#include "net_mgr_core_int.h"
+
+#include "net_mgr_dhcp.h"
 #include "net_mgr_dns.h"
 #include "net_mgr_err.h"
-#include "net_mgr_eth.h"
 #include "net_mgr_event.h"
 #include "net_mgr_route.h"
 #include "net_mgr_util.h"
-#include "net_mgr_wifi.h"
 
 #include <stdio.h>
 #include <string.h>
-#include <errno.h>
-#include <unistd.h>
-#include <time.h>
 #include <pthread.h>
 
-/** 链路状态刷新周期（毫秒），netlink 事件到达时提前唤醒 */
-#define NETMGR_TICK_MS  200
-/** 管理线程等待周期（毫秒） */
-#define CORE_TICK_MS    NETMGR_TICK_MS
-/** 毫秒转纳秒的换算系数 */
-#define NS_PER_MS       1000000L
-/** 一纳秒进位阈值（10^9） */
-#define CORE_NS_SEC     1000000000L
 /** 路由 metric 基准值，叠加优先级后作为最终 metric */
 #define NETMGR_METRIC_BASE  0
 
+/** 一轮仲裁中最多收集的事件数：三链路 ×（状态翻转 + 信息变化）+ 主链路切换 */
+#define CORE_EV_MAX  8
+
 /** 管理核心上下文，承载仲裁层全部运行状态 */
 typedef struct {
-    volatile int running;                   /**< 1=管理线程运行中 */
     int started;                            /**< 1=服务已启动 */
     int active;                             /**< 当前生效链路索引，-1 表示无 */
-    pthread_t tid;                          /**< 管理线程 */
-    netmgr_ev_cb cb;                        /**< 事件回调，可为空 */
+    netmgr_event_cb cb;                     /**< 事件回调，可为空 */
+    void* user;                             /**< 事件回调的用户指针，可为空 */
     char dns[NETMGR_IP_LEN];                /**< 当前已下发的 DNS */
-    pthread_mutex_t lock;                   /**< 链路上下文互斥锁 */
-    pthread_mutex_t wait;                   /**< 管理线程等待锁，与 cond 配对 */
-    pthread_cond_t cond;                    /**< 管理线程等待条件 */
+    pthread_mutex_t lock;                   /**< 仲裁互斥锁，事件回调与业务轮询共用 */
     const NETMGR_OPS* ops[NETMGR_TYPE_MAX]; /**< 链路类型到操作表的映射，下标与 NETMGR_TYPE 对齐 */
+    NETMGR_ETH_CONF ethConf;                /**< 以太网配置副本，供链路开关按上次配置重新拉起 */
+    NETMGR_WIFI_CONF wifiConf;              /**< WiFi 配置副本 */
+    NETMGR_CELL_CONF cellConf;              /**< 4G 配置副本 */
     NETMGR_CTX link[NETMGR_TYPE_MAX];       /**< 三条链路上下文 */
 } NETMGR_CORE;
 
 /**
  * 管理核心上下文（模块内单实例，仲裁层状态全部收敛于此）
- * 用途：保存三条链路运行态、当前生效链路、事件回调、已下发 DNS 与同步原语
- * 单位/范围：active 取 -1 或 0~2 的链路下标；prio 取 0~255；running 取 0/1
- * 默认值依据：静态零初始化，start 时显式重建（active=-1 表示无生效链路）；同步原语用静态初始化器
- * 写入方/读取方：仲裁线程与各配置接口在 g_core.lock 保护下读写
+ * 用途：保存三条链路运行态、当前生效链路、业务回调、已下发 DNS 与仲裁互斥锁
+ * 单位/范围：active 取 -1 或 0~2 的链路下标；prio 取 0~255；started 取 0/1
+ * 默认值依据：静态零初始化，start 时显式重建（active=-1 表示无生效链路）；互斥锁用静态初始化器
+ * 写入方/读取方：sys 层事件回调与业务轮询接口均在 g_core.lock 保护下读写
  * 生命周期：仅内存态，start/stop 管理，掉电不保存
  */
 static NETMGR_CORE g_core = {
-    .ops = {&netmgr_eth_ops, &netmgr_wifi_ops, &netmgr_cell_ops},
+    .ops = {&core_eth_ops, &core_wifi_ops, &core_cell_ops},
     .lock = PTHREAD_MUTEX_INITIALIZER,
-    .wait = PTHREAD_MUTEX_INITIALIZER,
-    .cond = PTHREAD_COND_INITIALIZER,
 };
 
 /**
- * @brief 唤醒管理线程提前执行一轮仲裁
+ * @brief 执行一轮仲裁：刷新状态、同步路由、选举主链路、上报事件
+ * @return 0 全部步骤成功；负值为本轮首个失败步骤的错误码
  */
-static void core_wake(void)
+static int core_tick(void);
+
+/**
+ * @brief 上报一次默认路由变化事件
+ * @param nev 触发变化的 netlink 路由事件，不可为空
+ */
+static void core_report_route(const NETMGR_NEV* nev);
+
+/**
+ * @brief netlink 事件回调：任一链路/地址/路由变化立即驱动一轮仲裁
+ * @details 回调运行在 sys 层事件接收线程内，直接处理事件而不是唤醒其它线程；
+ *          g_core.lock 保证与兜底线程串行，不会并发刷新
+ * @param ev   事件内容，当前不区分，统一交由状态刷新判断
+ * @param user 未使用
+ * @return 恒返回 0
+ */
+static int core_event_cb(const NETMGR_NEV* ev, void* user)
 {
-    pthread_mutex_lock(&g_core.wait);
-    pthread_cond_signal(&g_core.cond);
-    pthread_mutex_unlock(&g_core.wait);
+    (void)user;
+
+    /* 事件到达即跑一轮仲裁，状态与信息变化由仲裁层统一上报 */
+    (void)core_tick();
+
+    /* 默认路由自身的增删（本模块下发或外部改写）单独通知业务 */
+    if (NULL != ev && 0 != ev->isDefault &&
+        (NETMGR_NEV_ROUTE_ADD == ev->type || NETMGR_NEV_ROUTE_DEL == ev->type))
+    {
+        core_report_route(ev);
+    }
+    return 0;
 }
 
 /**
@@ -92,29 +110,74 @@ static void core_conv(const NETMGR_CTX* ctx, NETMGR_LINK* link)
     snprintf(link->ip, sizeof(link->ip), "%s", ctx->ip);
     snprintf(link->mask, sizeof(link->mask), "%s", ctx->mask);
     snprintf(link->gate, sizeof(link->gate), "%s", ctx->gate);
+    link->err = ctx->err;
 }
 
-/**
- * @brief 上报一次链路事件
- * @param ev  事件类型
- * @param ctx 触发事件的链路上下文，不可为空
- */
-static void core_notify(NETMGR_EV ev, const NETMGR_CTX* ctx)
-{
-    NETMGR_LINK snapshot = {0}; /* 传给应用的状态快照 */
+/** 单条待上报事件：事件数据为值语义，回调期间不访问内部上下文 */
+typedef NETMGR_EVENT CORE_EV_ITEM;
 
-    if (NULL == ctx || NULL == g_core.cb)
+/**
+ * @brief 把链路上下文转换为对外快照（含 ACTIVE 呈现）
+ * @param ctx 链路上下文，不可为空
+ * @param out 输出快照，不可为空
+ */
+static void core_snapshot(const NETMGR_CTX* ctx, NETMGR_LINK* out)
+{
+    if (NULL == ctx || NULL == out)
         return;
 
-    core_conv(ctx, &snapshot);
+    core_conv(ctx, out);
+
     /* 与当前生效链路一致时对外呈现 ACTIVE，便于应用直接区分主链路 */
     if (g_core.active >= 0 && g_core.active < NETMGR_TYPE_MAX &&
         &g_core.link[g_core.active] == ctx && NETMGR_ST_READY == ctx->state)
     {
-        snapshot.state = NETMGR_ST_ACTIVE;
+        out->state = NETMGR_ST_ACTIVE;
     }
+}
 
-    (void)g_core.cb(ev, &snapshot);
+/**
+ * @brief 向本轮事件缓冲追加一条事件
+ * @param items 事件缓冲，不可为空
+ * @param num   当前条数，不可为空
+ * @param ev    已构造好的事件，不可为空（值拷贝，调用后原对象可复用）
+ */
+static void core_ev_add(CORE_EV_ITEM* items, int* num, const NETMGR_EVENT* ev)
+{
+    if (NULL == items || NULL == num || NULL == ev || *num >= CORE_EV_MAX)
+        return;
+
+    items[*num] = *ev;
+    ++(*num);
+}
+
+/**
+ * @brief 用链路快照填充事件载荷（UP/DOWN 等以完整快照承载的事件）
+ * @param ev    待填充事件，不可为空
+ * @param type  事件类型
+ * @param link  链路快照，不可为空
+ */
+static void core_ev_link(NETMGR_EVENT* ev, NETMGR_EV type, const NETMGR_LINK* link)
+{
+    if (NULL == ev || NULL == link)
+        return;
+
+    memset(ev, 0, sizeof(*ev));
+    ev->ev = type;
+    ev->u.link = *link;
+}
+
+/**
+ * @brief 分发一条事件给已注册的回调
+ * @details 在锁外调用，业务回调内再调本模块接口不会造成仲裁锁自死锁
+ * @param ev 事件数据，不可为空
+ */
+static void core_dispatch(const NETMGR_EVENT* ev)
+{
+    if (NULL == ev || NULL == g_core.cb)
+        return;
+
+    (void)g_core.cb(ev, g_core.user);
 }
 
 /**
@@ -193,18 +256,25 @@ static int core_dns_sync(void)
 }
 
 /**
- * @brief 执行一轮仲裁：刷新状态、同步路由、选举主链路、上报事件
+ * @brief 执行一轮仲裁：刷新状态、同步路由、选举主链路、收集并上报事件
  * @return 0 全部步骤成功；负值为本轮首个失败步骤的错误码
  */
 static int core_tick(void)
 {
-    NETMGR_CTX* ctx = NULL; /* 当前遍历的链路上下文 */
-    NETMGR_EV ev = NETMGR_EV_UP; /* 待上报事件 */
-    int old_active = -1;    /* 上一轮生效链路 */
-    int new_active = -1;    /* 本轮生效链路 */
-    int err = 0;            /* 本轮首个错误码，0 表示尚无失败 */
-    int ret = 0;            /* 子步骤返回值 */
-    int i = 0;              /* 链路下标，从 0 开始 */
+    CORE_EV_ITEM items[CORE_EV_MAX] = {0}; /* 本轮收集的事件 */
+    NETMGR_EVENT evItem = {0};             /* 待追加的单条事件 */
+    NETMGR_LINK before = {0};              /* 刷新前的链路快照 */
+    NETMGR_LINK after = {0};               /* 刷新后的链路快照 */
+    NETMGR_WIFI_INFO wifiBefore = {0};     /* 刷新前的 WiFi 连接信息 */
+    NETMGR_CTX* ctx = NULL;                /* 当前遍历的链路上下文 */
+    NETMGR_EV flip = NETMGR_EV_DOWN;       /* 状态翻转对应的事件类型 */
+    unsigned int changed = 0;              /* INFO_CHANGE 的变化字段位图 */
+    int itemNum = 0;                       /* 已收集事件数 */
+    int old_active = -1;                   /* 上一轮生效链路 */
+    int new_active = -1;                   /* 本轮生效链路 */
+    int err = 0;                           /* 本轮首个错误码，0 表示尚无失败 */
+    int ret = 0;                           /* 子步骤返回值 */
+    int i = 0;                             /* 链路下标，从 0 开始 */
 
     pthread_mutex_lock(&g_core.lock);
     old_active = g_core.active;
@@ -213,8 +283,22 @@ static int core_tick(void)
     for (i = 0; i < NETMGR_TYPE_MAX; ++i)
     {
         ctx = &g_core.link[i];
+
+        /* 未启用链路不刷新，只在状态刚变为 DISABLED 时补发一次事件 */
         if (!ctx->enable || NULL == g_core.ops[i])
+        {
+            if (ctx->prev != ctx->state)
+            {
+                ctx->prev = ctx->state;
+                core_snapshot(ctx, &after);
+                core_ev_link(&evItem, NETMGR_EV_DISABLED, &after);
+                core_ev_add(items, &itemNum, &evItem);
+            }
             continue;
+        }
+
+        core_snapshot(ctx, &before);
+        wifiBefore = ctx->wifi;
         ret = g_core.ops[i]->refresh(ctx);
         if (ret < 0)
         {
@@ -223,16 +307,60 @@ static int core_tick(void)
                 err = ret;
             continue;
         }
+
+        /* WiFi 关联状态不产生 netlink 事件，按刷新前后的差异单独上报 */
+        if (wifiBefore.connected != ctx->wifi.connected)
+        {
+            memset(&evItem, 0, sizeof(evItem));
+            evItem.ev = (0 != ctx->wifi.connected) ? NETMGR_EV_WIFI_CONNECTED :
+                                                    NETMGR_EV_WIFI_DISCONNECTED;
+            evItem.u.wifi.ref.type = ctx->type;
+            (void)snprintf(evItem.u.wifi.ref.ifname, sizeof(evItem.u.wifi.ref.ifname), "%s",
+                           ctx->ifname);
+            evItem.u.wifi.info = ctx->wifi;
+            core_ev_add(items, &itemNum, &evItem);
+        }
+
         ret = core_route_sync(ctx);
         if (ret < 0 && 0 == err)
             err = ret;
 
-        /* 状态翻转才通知应用，避免周期刷新造成重复上报 */
+        core_snapshot(ctx, &after);
+
         if (ctx->prev != ctx->state)
         {
-            ev = (NETMGR_ST_READY == ctx->state) ? NETMGR_EV_UP : NETMGR_EV_DOWN;
+            /* 状态翻转：从未启用到启用报 ENABLED，其余按是否就绪报 UP / DOWN */
+            if (NETMGR_ST_DISABLED == ctx->prev)
+                flip = NETMGR_EV_ENABLED;
+            else if (NETMGR_ST_READY == ctx->state)
+                flip = NETMGR_EV_UP;
+            else
+                flip = NETMGR_EV_DOWN;
+
             ctx->prev = ctx->state;
-            core_notify(ev, ctx);
+            core_ev_link(&evItem, flip, &after);
+            core_ev_add(items, &itemNum, &evItem);
+        }
+        else if (NETMGR_ST_READY == ctx->state)
+        {
+            /* 状态未变时按字段比对，给出变化位图与前后快照 */
+            changed = 0;
+            if (0 != strcmp(before.ip, after.ip))
+                changed |= NETMGR_LINK_F_IP;
+            if (0 != strcmp(before.mask, after.mask))
+                changed |= NETMGR_LINK_F_MASK;
+            if (0 != strcmp(before.gate, after.gate))
+                changed |= NETMGR_LINK_F_GATE;
+
+            if (0 != changed)
+            {
+                memset(&evItem, 0, sizeof(evItem));
+                evItem.ev = NETMGR_EV_INFO_CHANGE;
+                evItem.u.info.cur = after;
+                evItem.u.info.prev = before;
+                evItem.u.info.changed = changed;
+                core_ev_add(items, &itemNum, &evItem);
+            }
         }
     }
 
@@ -247,55 +375,121 @@ static int core_tick(void)
     }
     g_core.active = new_active;
 
-    /* 第三阶段：生效链路变化时先更新 DNS，再上报主链路切换 */
+    /* 第三阶段：生效链路变化时先更新 DNS，再收集主链路切换事件 */
     if (old_active != new_active)
     {
         ret = core_dns_sync();
         if (ret < 0 && 0 == err)
             err = ret;
-        if (new_active >= 0)
-            core_notify(NETMGR_EV_SWITCH, &g_core.link[new_active]);
+
+        memset(&evItem, 0, sizeof(evItem));
+        evItem.ev = NETMGR_EV_SWITCH;
+        evItem.u.sw.from = (old_active >= 0) ? (NETMGR_TYPE)old_active : NETMGR_TYPE_MAX;
+        evItem.u.sw.to = (new_active >= 0) ? (NETMGR_TYPE)new_active : NETMGR_TYPE_MAX;
+        core_ev_add(items, &itemNum, &evItem);
     }
 
     pthread_mutex_unlock(&g_core.lock);
+
+    /* 锁外分发：业务回调内可安全调用本模块的查询与配置接口 */
+    for (i = 0; i < itemNum; ++i)
+        core_dispatch(&items[i]);
     return err;
 }
 
 /**
- * @brief 管理线程主循环：定时与事件双触发
- * @param arg 未使用
- * @return 恒定返回空指针
+ * @brief 上报一次默认路由变化事件
+ * @param nev 触发变化的 netlink 路由事件，不可为空
  */
-static void* core_thread(void* arg)
+static void core_report_route(const NETMGR_NEV* nev)
 {
-    struct timespec ts = {0}; /* 本轮等待截止时间 */
+    CORE_EV_ITEM item = {0}; /* 待分发事件 */
+    NETMGR_LINK snap = {0};  /* 命中的链路快照 */
+    int started = 0;         /* 1=服务运行中 */
+    int i = 0;               /* 链路下标，从 0 开始 */
 
-    (void)arg;
-    while (1)
+    if (NULL == nev || '\0' == nev->ifname[0])
+        return;
+
+    pthread_mutex_lock(&g_core.lock);
+    started = g_core.started;
+    if (started)
     {
-        pthread_mutex_lock(&g_core.wait);
-        if (!g_core.running)
+        for (i = 0; i < NETMGR_TYPE_MAX; ++i)
         {
-            pthread_mutex_unlock(&g_core.wait);
+            if (0 != strcmp(g_core.link[i].ifname, nev->ifname))
+                continue;
+            core_snapshot(&g_core.link[i], &snap);
             break;
         }
-
-        /* 每轮重新计算截止时间，事件唤醒后下一轮仍按完整周期等待 */
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += (long)CORE_TICK_MS * NS_PER_MS;
-        if (ts.tv_nsec >= CORE_NS_SEC)
-        {
-            ts.tv_sec += 1;
-            ts.tv_nsec -= CORE_NS_SEC;
-        }
-        (void)pthread_cond_timedwait(&g_core.cond, &g_core.wait, &ts);
-        pthread_mutex_unlock(&g_core.wait);
-
-        /* 线程内无返回通道，本轮错误码由周期仲裁自行收敛 */
-        (void)core_tick();
     }
-    return NULL;
+    pthread_mutex_unlock(&g_core.lock);
+
+    /* 事件来自本模块未管理的接口，无对应链路可上报 */
+    if (!started || '\0' == snap.ifname[0])
+        return;
+
+    memset(&item, 0, sizeof(item));
+    item.ev = NETMGR_EV_ROUTE_CHANGE;
+    item.u.route.ref.type = snap.type;
+    (void)snprintf(item.u.route.ref.ifname, sizeof(item.u.route.ref.ifname), "%s", snap.ifname);
+    item.u.route.isAdd = (NETMGR_NEV_ROUTE_ADD == nev->type) ? 1 : 0;
+    (void)snprintf(item.u.route.gate, sizeof(item.u.route.gate), "%s", nev->gate);
+    core_dispatch(&item);
 }
+
+NETMGR_DHCP_RET core_dhcp_cb(NETMGR_DHCP_STATE state, const char* ifname, int err, void* user)
+{
+    NETMGR_DHCP_BASE* base = (NETMGR_DHCP_BASE*)user; /* 链路私有数据的公共头 */
+    int failErr = (NETMGR_DHCP_FAIL == state) ? err : 0; /* FAIL 时上抛的错误码，其余为 0 */
+
+    if (NULL == base || NULL == ifname)
+        return NETMGR_DHCP_RET_OK;
+
+    /* 只记录状态与错误码；地址仍由刷新流程从接口读取，避免跨线程改写链路上下文 */
+    base->dhcpState = state;
+    base->dhcpErr = failErr;
+
+    /* 同步上报仲裁层，转成业务可见的 DHCP 事件 */
+    core_report_dhcp(base->type, (int)state, failErr);
+    return NETMGR_DHCP_RET_OK;
+}
+
+void core_report_dhcp(NETMGR_TYPE type, int state, int err)
+{
+    CORE_EV_ITEM item = {0}; /* 待分发事件 */
+    NETMGR_LINK snap = {0};  /* 当前链路快照 */
+    int started = 0;         /* 1=服务运行中 */
+    NETMGR_EV ev = NETMGR_EV_DHCP_RUNNING; /* 事件类型 */
+
+    if ((int)type < 0 || (int)type >= NETMGR_TYPE_MAX)
+        return;
+
+    pthread_mutex_lock(&g_core.lock);
+    started = g_core.started;
+    if (started)
+        core_snapshot(&g_core.link[type], &snap);
+    pthread_mutex_unlock(&g_core.lock);
+
+    if (!started)
+        return;
+
+    if (NETMGR_DHCP_RUNNING == state)
+        ev = NETMGR_EV_DHCP_RUNNING;
+    else if (NETMGR_DHCP_SUCC == state)
+        ev = NETMGR_EV_DHCP_SUCC;
+    else
+        ev = NETMGR_EV_DHCP_FAIL;
+
+    memset(&item, 0, sizeof(item));
+    item.ev = ev;
+    item.u.dhcp.ref.type = type;
+    (void)snprintf(item.u.dhcp.ref.ifname, sizeof(item.u.dhcp.ref.ifname), "%s", snap.ifname);
+    item.u.dhcp.err = (NETMGR_DHCP_FAIL == state) ? err : 0;
+    core_dispatch(&item);
+}
+
+
 
 /**
  * @brief 按配置拉起单条链路
@@ -310,6 +504,8 @@ static int core_link_open(NETMGR_TYPE type, const void* conf, int enable, unsign
     NETMGR_CTX* ctx = &g_core.link[type]; /* 目标链路上下文 */
     int ret = 0;                          /* 子步骤返回值 */
 
+    /* 仅 netmgr_core_start 首次装配时调用一次：start 入口有 started 守卫拒绝重入，
+       不存在「已 open 再 open」的路径；运行期开关走 core_link_reset 的先关后开 */
     if (!enable)
         return 0;
     if (NULL == g_core.ops[type])
@@ -324,8 +520,7 @@ static int core_link_open(NETMGR_TYPE type, const void* conf, int enable, unsign
     if (ret < 0)
     {
         ctx->enable = 0;
-        ctx->state = NETMGR_ST_DOWN;
-        ctx->prev = NETMGR_ST_DOWN;
+        ctx->state = NETMGR_ST_DISABLED;
     }
     pthread_mutex_unlock(&g_core.lock);
     return ret;
@@ -364,8 +559,9 @@ static int core_links_stop(void)
                 err = ret;
         }
         ctx->enable = 0;
-        ctx->state = NETMGR_ST_DOWN;
-        ctx->prev = NETMGR_ST_DOWN;
+        ctx->state = NETMGR_ST_DISABLED;
+        ctx->prev = NETMGR_ST_DISABLED;
+        ctx->err = 0;
     }
     g_core.active = -1;
     pthread_mutex_unlock(&g_core.lock);
@@ -413,35 +609,33 @@ static int core_link_reset(NETMGR_TYPE type, const void* conf, int enable, unsig
 
     if (!enable)
     {
-        ctx->state = NETMGR_ST_DOWN;
-        ctx->prev = NETMGR_ST_DOWN;
+        /* 只改状态，prev 留给仲裁轮次比对，保证 DISABLED 事件不丢 */
+        ctx->state = NETMGR_ST_DISABLED;
+        ctx->ip[0] = '\0';
+        ctx->mask[0] = '\0';
+        ctx->gate[0] = '\0';
+        ctx->err = 0;
         pthread_mutex_unlock(&g_core.lock);
         return err;
     }
 
-    /* 第三步：按新配置拉起，失败时保持停用状态并上报错误 */
+    /* 第三步：按新配置拉起，失败时保持停用状态并上报错误。
+       上一步已无条件 close 旧链路，此处是唯一 open 点，重复调用 link_enable(on=1)
+       表现为「先关后开」的整链重建，不会叠开第二个链路实例 */
     ctx->prio = prio;
     ctx->enable = 1;
     ret = g_core.ops[type]->open(ctx, conf);
     if (ret < 0)
     {
         ctx->enable = 0;
-        ctx->state = NETMGR_ST_DOWN;
-        ctx->prev = NETMGR_ST_DOWN;
+        ctx->state = NETMGR_ST_DISABLED;
         pthread_mutex_unlock(&g_core.lock);
         return ret;
     }
     pthread_mutex_unlock(&g_core.lock);
     return err;
 }
-
-/**
- * @brief 启动仲裁核心，按配置拉起全部启用的链路并开始周期仲裁
- * @param conf 总配置，不可为空
- * @param cb   链路状态回调，可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
-int netmgr_core_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
+int netmgr_core_start(const NETMGR_CONF* conf, netmgr_event_cb cb, void* user)
 {
     int want = 0;  /* 配置中启用的链路数量 */
     int fail = 0;  /* 拉起失败的链路数量 */
@@ -461,18 +655,24 @@ int netmgr_core_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
         return -NETMGRERR_STATE;
     }
 
-    /* 初始化三条链路上下文，rmetric 用 -1 表示尚未下发路由 */
+    /* 初始化三条链路上下文，未启用的链路保持 DISABLED；rmetric 用 -1 表示尚未下发路由 */
     for (i = 0; i < NETMGR_TYPE_MAX; ++i)
     {
         memset(&g_core.link[i], 0, sizeof(NETMGR_CTX));
         g_core.link[i].type = (NETMGR_TYPE)i;
-        g_core.link[i].state = NETMGR_ST_DOWN;
-        g_core.link[i].prev = NETMGR_ST_DOWN;
+        g_core.link[i].state = NETMGR_ST_DISABLED;
+        g_core.link[i].prev = NETMGR_ST_DISABLED;
         g_core.link[i].rmetric = -1;
     }
     g_core.active = -1;
     g_core.cb = cb;
+    g_core.user = user;
     g_core.dns[0] = '\0';
+
+    /* 保存配置副本，运行期链路开关按此副本重新拉起 */
+    g_core.ethConf = conf->eth;
+    g_core.wifiConf = conf->wifi;
+    g_core.cellConf = conf->cell;
     pthread_mutex_unlock(&g_core.lock);
 
     want = (conf->eth.enable ? 1 : 0) + (conf->wifi.enable ? 1 : 0) + (conf->cell.enable ? 1 : 0);
@@ -482,7 +682,7 @@ int netmgr_core_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
     }
 
     /* 装配顺序：先建事件监听，再拉起链路，保证取址过程中的事件不丢失 */
-    ret = netmgr_event_open(core_wake);
+    ret = netmgr_event_open(core_event_cb, NULL, NETMGR_EVENT_GROUPS_DEFAULT);
     if (ret < 0)
         return ret;
 
@@ -514,26 +714,13 @@ int netmgr_core_start(const NETMGR_CONF* conf, netmgr_ev_cb cb)
     }
 
     g_core.started = 1;
-    g_core.running = 1;
-    if (0 != pthread_create(&g_core.tid, NULL, core_thread, NULL))
-    {
-        g_core.running = 0;
-        g_core.started = 0;
-        (void)core_links_stop();
-        (void)netmgr_event_close();
-        return -NETMGRERR_THREAD;
-    }
 
-    /* 立即执行一轮，让静态配置链路无需等待首个周期即可就绪；
+    /* 立即执行一轮，让静态配置链路无需等待业务轮询即可就绪；
        首轮失败只影响个别链路，启动本身已成功，错误由后续轮次自愈 */
     (void)core_tick();
     return 0;
 }
 
-/**
- * @brief 停止仲裁核心，关闭全部链路并删除本模块下发的默认路由
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
 int netmgr_core_stop(void)
 {
     int err = 0; /* 首个错误码，0 表示全部步骤成功 */
@@ -547,20 +734,12 @@ int netmgr_core_stop(void)
     }
     pthread_mutex_unlock(&g_core.lock);
 
-    /* 第一步：停管理线程，后续拆除流程不再有并发刷新 */
-    pthread_mutex_lock(&g_core.wait);
-    g_core.running = 0;
-    pthread_cond_signal(&g_core.cond);
-    pthread_mutex_unlock(&g_core.wait);
-    if (0 != pthread_join(g_core.tid, NULL))
-        err = -NETMGRERR_THREAD;
-
-    /* 第二步：停事件监听，避免拆除期间被反复唤醒 */
+    /* 第一步：停事件监听，之后不会再有事件回调并发进入仲裁 */
     ret = netmgr_event_close();
     if (ret < 0 && 0 == err)
         err = ret;
 
-    /* 第三步：撤路由并关闭链路 */
+    /* 第二步：撤路由并关闭链路 */
     ret = core_links_stop();
     if (ret < 0 && 0 == err)
         err = ret;
@@ -568,16 +747,24 @@ int netmgr_core_stop(void)
     pthread_mutex_lock(&g_core.lock);
     g_core.started = 0;
     g_core.cb = NULL;
+    g_core.user = NULL;
     pthread_mutex_unlock(&g_core.lock);
     return err;
 }
 
-/**
- * @brief 读取指定类型链路的当前优先级
- * @param type 链路类型
- * @param prio 输出当前优先级，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
+int netmgr_core_poll(void)
+{
+    pthread_mutex_lock(&g_core.lock);
+    if (!g_core.started)
+    {
+        pthread_mutex_unlock(&g_core.lock);
+        return -NETMGRERR_STATE;
+    }
+    pthread_mutex_unlock(&g_core.lock);
+
+    return core_tick();
+}
+
 int netmgr_core_prio_get(NETMGR_TYPE type, unsigned char* prio)
 {
     if ((int)type < 0 || (int)type >= NETMGR_TYPE_MAX || NULL == prio)
@@ -591,12 +778,6 @@ int netmgr_core_prio_get(NETMGR_TYPE type, unsigned char* prio)
     return 0;
 }
 
-/**
- * @brief 查询全部链路的状态快照
- * @param list 输出数组，容量由 *num 传入
- * @param num  入参为数组容量，出参为实际写入条数
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
 int netmgr_core_stat_get(NETMGR_LINK* list, int* num)
 {
     NETMGR_LINK* item = NULL; /* 当前写入的快照项 */
@@ -626,12 +807,6 @@ int netmgr_core_stat_get(NETMGR_LINK* list, int* num)
     return 0;
 }
 
-/**
- * @brief 运行时修改指定类型链路的优先级
- * @param type 链路类型
- * @param prio 新优先级（0-255，小者优先）
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
 int netmgr_core_prio_set(NETMGR_TYPE type, unsigned char prio)
 {
     if ((int)type < 0 || (int)type >= NETMGR_TYPE_MAX)
@@ -648,16 +823,12 @@ int netmgr_core_prio_set(NETMGR_TYPE type, unsigned char prio)
     g_core.link[type].prio = prio;
     pthread_mutex_unlock(&g_core.lock);
 
-    /* 立即唤醒仲裁，使路由 metric 尽快与新优先级一致 */
-    core_wake();
+    /* 与其它显式操作一致立即跑一轮仲裁：主备改选与默认路由 metric 更新随返回即可见，
+       不再等业务的下一次 poll */
+    (void)core_tick();
     return 0;
 }
 
-/**
- * @brief 重新配置以太网链路
- * @param conf 以太网配置，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
 int netmgr_core_eth_set(const NETMGR_ETH_CONF* conf)
 {
     int ret = 0; /* 装配结果 */
@@ -668,15 +839,17 @@ int netmgr_core_eth_set(const NETMGR_ETH_CONF* conf)
     }
 
     ret = core_link_reset(NETMGR_ETH, conf, conf->enable, conf->prio);
-    core_wake();
+
+    /* 无论装配成败都保存最新配置，后续开关按它重新拉起 */
+    pthread_mutex_lock(&g_core.lock);
+    g_core.ethConf = *conf;
+    pthread_mutex_unlock(&g_core.lock);
+
+    /* 重配属显式操作，立即跑一轮仲裁让状态与事件同步生效 */
+    (void)core_tick();
     return ret;
 }
 
-/**
- * @brief 重新配置 WiFi 链路
- * @param conf WiFi 配置，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
 int netmgr_core_wifi_set(const NETMGR_WIFI_CONF* conf)
 {
     int ret = 0; /* 装配结果 */
@@ -687,15 +860,17 @@ int netmgr_core_wifi_set(const NETMGR_WIFI_CONF* conf)
     }
 
     ret = core_link_reset(NETMGR_WIFI, conf, conf->enable, conf->prio);
-    core_wake();
+
+    /* 无论装配成败都保存最新配置，后续开关按它重新拉起 */
+    pthread_mutex_lock(&g_core.lock);
+    g_core.wifiConf = *conf;
+    pthread_mutex_unlock(&g_core.lock);
+
+    /* 重配属显式操作，立即跑一轮仲裁让状态与事件同步生效 */
+    (void)core_tick();
     return ret;
 }
 
-/**
- * @brief 重新配置 4G 链路
- * @param conf 4G 配置，不可为空
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
 int netmgr_core_cell_set(const NETMGR_CELL_CONF* conf)
 {
     int ret = 0; /* 装配结果 */
@@ -706,15 +881,59 @@ int netmgr_core_cell_set(const NETMGR_CELL_CONF* conf)
     }
 
     ret = core_link_reset(NETMGR_CELL, conf, conf->enable, conf->prio);
-    core_wake();
+
+    /* 无论装配成败都保存最新配置，后续开关按它重新拉起 */
+    pthread_mutex_lock(&g_core.lock);
+    g_core.cellConf = *conf;
+    pthread_mutex_unlock(&g_core.lock);
+
+    /* 重配属显式操作，立即跑一轮仲裁让状态与事件同步生效 */
+    (void)core_tick();
     return ret;
 }
 
-/**
- * @brief 下发 DNS 服务器地址
- * @param dns 单个 IPv4 地址字符串，为空或空串表示清除已下发的 DNS
- * @return 0 成功；负值为 NETMGRERR_* 错误码
- */
+int netmgr_core_link_enable(NETMGR_TYPE type, int on)
+{
+    NETMGR_ETH_CONF eth = {0};   /* 以太网配置副本 */
+    NETMGR_WIFI_CONF wifi = {0}; /* WiFi 配置副本 */
+    NETMGR_CELL_CONF cell = {0}; /* 4G 配置副本 */
+    int started = 0;             /* 1=服务已启动 */
+    int ret = 0;                 /* 链路重装结果 */
+
+    if ((int)type < 0 || (int)type >= NETMGR_TYPE_MAX)
+        return -NETMGRERR_PARAM;
+
+    /* 配置副本在锁内拷出，避免与并发的 set 交叉；链路重装本身在 reset 内加锁 */
+    pthread_mutex_lock(&g_core.lock);
+    started = g_core.started;
+    eth = g_core.ethConf;
+    wifi = g_core.wifiConf;
+    cell = g_core.cellConf;
+    pthread_mutex_unlock(&g_core.lock);
+
+    if (!started)
+        return -NETMGRERR_STATE;
+
+    switch (type)
+    {
+    case NETMGR_ETH:
+        ret = core_link_reset(NETMGR_ETH, &eth, on, eth.prio);
+        break;
+    case NETMGR_WIFI:
+        ret = core_link_reset(NETMGR_WIFI, &wifi, on, wifi.prio);
+        break;
+    case NETMGR_CELL:
+        ret = core_link_reset(NETMGR_CELL, &cell, on, cell.prio);
+        break;
+    default:
+        return -NETMGRERR_PARAM;
+    }
+
+    /* 开关属于显式操作，立即跑一轮仲裁让状态与事件同步生效 */
+    (void)core_tick();
+    return ret;
+}
+
 int netmgr_core_dns_set(const char* dns)
 {
     int ret = 0; /* 写入结果 */
@@ -734,4 +953,31 @@ int netmgr_core_dns_set(const char* dns)
     snprintf(g_core.dns, sizeof(g_core.dns), "%s", (NULL == dns) ? "" : dns);
     pthread_mutex_unlock(&g_core.lock);
     return 0;
+}
+
+int netmgr_core_wifi_scan(NETMGR_WIFI_AP* list, int* num)
+{
+    CORE_EV_ITEM item = {0}; /* 待分发事件 */
+    int count = 0;           /* 实际写入条数，扫描失败时保持 0 */
+    int ret = 0;             /* 扫描结果 */
+
+    if (NULL == list || NULL == num || *num <= 0)
+        return -NETMGRERR_PARAM;
+
+    ret = netmgr_wpa_scan(0);
+
+    /* 无论成功与否都通知业务：complete 标记本轮是否正常拿到结果 */
+    memset(&item, 0, sizeof(item));
+    item.ev = NETMGR_EV_WIFI_SCAN_DONE;
+    item.u.scan.complete = (ret < 0) ? 0 : 1;
+    if (0 == ret && 0 == netmgr_wpa_scan_result(list, &count))
+        item.u.scan.apNum = count;
+    *num = count;
+    core_dispatch(&item);
+    return ret;
+}
+
+int netmgr_core_wifi_scan_result(NETMGR_WIFI_AP* list, int* num)
+{
+    return netmgr_wpa_scan_result(list, num);
 }
