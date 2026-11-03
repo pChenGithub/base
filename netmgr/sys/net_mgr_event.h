@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#include "net_mgr_types.h"
+#include "net_mgr_limits.h"
 
 /** 订阅组掩码：0 表示使用默认组（链路 + IPv4 地址 + IPv4 路由） */
 #define NETMGR_EVENT_GROUPS_DEFAULT  0u

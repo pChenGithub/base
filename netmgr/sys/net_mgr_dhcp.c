@@ -14,7 +14,7 @@
 #include "net_mgr_dhcp.h"
 
 #include "net_mgr_err.h"
-#include "net_mgr_types.h"
+#include "net_mgr_limits.h"
 
 #include <stdio.h>
 #include <stdlib.h>

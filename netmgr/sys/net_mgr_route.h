@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#include "net_mgr_types.h"
+#include "net_mgr_limits.h"
 
 /** 默认路由条目 */
 typedef struct {
