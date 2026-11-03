@@ -34,7 +34,7 @@ typedef struct {
     netmgr_nev_cb cb;     /**< 事件回调，可为空 */
     void* user;           /**< 回调透传的用户指针，可为空 */
     char buf[4096];       /**< 事件接收缓冲，承载 netlink 单次事件消息 */
-} NETMGR_EVENT;
+} NETMGR_EV_CTX;
 
 /**
  * 事件监听上下文（模块内单实例，本层状态全部收敛于此）
@@ -44,7 +44,7 @@ typedef struct {
  * 写入方/读取方：open/close 写控制字段，事件线程写 buf 并解析；仅本文件访问
  * 生命周期：仅内存态，随进程存在，close 后控制字段复位为未启动态
  */
-static NETMGR_EVENT g_event = {.fd = -1};
+static NETMGR_EV_CTX g_event = {.fd = -1};
 
 /**
  * @brief 按接口索引取接口名
@@ -253,7 +253,7 @@ static int event_parse(struct nlmsghdr* nlh, NETMGR_NEV* ev)
  */
 static void* event_thread(void* arg)
 {
-    NETMGR_EVENT* hd = (NETMGR_EVENT*)arg; /* 事件监听上下文 */
+    NETMGR_EV_CTX* hd = (NETMGR_EV_CTX*)arg; /* 事件监听上下文 */
     struct nlmsghdr* nlh = NULL;           /* 消息视图 */
     NETMGR_NEV nev = {0};                  /* 单条事件内容 */
     int len = 0;                           /* 本轮有效长度 */
