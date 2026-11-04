@@ -140,6 +140,19 @@ static void dhcp_kill_by_pidfile(const char* path)
  * @return 0 会话结束；负值为 NETMGRERR_* 错误码（管道建立失败等执行异常）
  */
 /**
+ * @brief 取单调时钟秒数，供失败判定计时
+ * @details 用 CLOCK_MONOTONIC 而非 time()：系统时间被回拨时不会导致判定时长失效
+ * @return 单调时钟秒数
+ */
+static time_t dhcp_mono_s(void)
+{
+    struct timespec ts = {0}; /* 单调时钟读数 */
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec;
+}
+
+/**
  * @brief 从 udhcpc 输出行解析租约地址与租约时长
  * @details 目标形如 "udhcpc: lease of 192.168.1.10 obtained from <server>, lease time 86400"；
  *          该行给出的是服务器标识而非服务器 IP，故不解析服务器地址
@@ -205,7 +218,7 @@ static int dhcp_session(NETMGR_DHCP* item, int* gotLease)
     if (NULL == fp)
         return -NETMGRERR_PROC;
 
-    begin = time(NULL);
+    begin = dhcp_mono_s();
     while (NULL != fgets(line, (int)sizeof(line) - 1, fp))
     {
         if (item->stopReq)
@@ -225,7 +238,7 @@ static int dhcp_session(NETMGR_DHCP* item, int* gotLease)
             {
                 succ = 1;
                 failReported = 0;
-                begin = time(NULL);
+                begin = dhcp_mono_s();
                 if (NULL != item->hand)
                     item->hand(NETMGR_DHCP_SUCC, item->ifname, 0, item->user);
             }
@@ -237,7 +250,7 @@ static int dhcp_session(NETMGR_DHCP* item, int* gotLease)
         {
             succ = 0;
             failReported = 0;
-            begin = time(NULL);
+            begin = dhcp_mono_s();
             if (NULL != item->hand)
                 item->hand(NETMGR_DHCP_LOST, item->ifname, 0, item->user);
             continue;
@@ -246,7 +259,7 @@ static int dhcp_session(NETMGR_DHCP* item, int* gotLease)
         /* 本轮超过判定时长仍未取得租约：说明对端无响应，上报一次 FAIL；
            udhcpc 会在会话内继续重试，成功后按上面的分支上报 SUCC 形成状态翻转 */
         if (0 == succ && 0 == failReported && NULL != item->hand &&
-            (time(NULL) - begin) >= DHCP_FAIL_REPORT_S)
+            (dhcp_mono_s() - begin) >= DHCP_FAIL_REPORT_S)
         {
             failReported = 1;
             item->hand(NETMGR_DHCP_FAIL, item->ifname, -NETMGRERR_DHCP, item->user);
@@ -274,9 +287,9 @@ static void dhcp_throttle(const NETMGR_DHCP* item)
 }
 
 /**
- * @brief 取址线程：维持取址会话，按回调要求重试，退出时清脏标志
- * @details 会话正常结束（udhcpc 退出）时按节流间隔重建会话，保证接口地址可续；
- *          失败时经回调决定是否重试，重试次数由调用方控制
+ * @brief 取址线程：维持取址会话，会话结束时自动节流重建，退出时清脏标志
+ * @details 会话（udhcpc 进程）结束时按节流间隔重建，直到 stop 为止；
+ *          本轮从未取到租约时先回调一次 FAIL；重试策略完全由本层决定，与回调无关
  * @param arg 指向占用的 NETMGR_DHCP 实例
  * @return 恒定返回空指针
  */
