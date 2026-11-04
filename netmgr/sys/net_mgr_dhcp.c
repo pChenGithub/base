@@ -1,12 +1,14 @@
 /**
  * @file net_mgr_dhcp.c
  * @brief netmgr 系统适配层：DHCP 取址实现
- * @details 结构高度对齐 netopt 的 net_dhcp：
- *          1) 命令字符串 + popen 执行 + 逐行判定（对应 exeShellWait + hand_retstr）；
- *          2) 每个接口一个线程，线程内回调 RUNNING -> SUCC/FAIL，FAIL 时可按回调要求重试；
- *          3) 槽位表 + 脏标志表示占用，取址线程退出时清脏标志并广播。
- *          与 netopt 的差异：本层不打日志、失败以错误码返回；停止不使用 pthread_cancel
- *          （会泄漏 popen 管道与子进程），改为按 udhcpc pidfile 结束取址进程后等线程自收尾。
+ * @details 采用「长驻会话」模型：DHCP 不是一次性取址，取不到要重试、取到后要续租，故
+ *          1) 每个接口对应一个取址线程，线程内用 popen 执行 udhcpc（前台）并逐行判定输出；
+ *          2) 取到租约即回调 SUCC，此后 udhcpc 常驻自行续租，续租成功不重复回调；
+ *          3) 取不到租约由 udhcpc 自身持续重试且不退出，故不产生 FAIL；仅当其异常退出
+ *             且本次从未取到租约时回调 FAIL，并由本层节流重建会话（回调无返回值）；
+ *          4) 会话在 stop 时结束（按 pidfile 结束 udhcpc 后线程自行收尾）。
+ *          本层不读取接口地址，调用方按回调给出的接口名自行读取，保持 sys 层各能力相互独立；
+ *          本层不打日志，失败以负错误码返回。
  */
 /* 行判定需用到 strcasestr，属 GNU 扩展，须在包含系统头之前打开 */
 #define _GNU_SOURCE
@@ -33,30 +35,27 @@
 #define DIRTY_FLAG          0x01
 /** 停止取址时等待线程收尾的超时（秒） */
 #define DHCP_STOP_S         3
+/** 会话失败/异常结束后的重试节流间隔（毫秒），避免 udhcpc 立刻退出时高频重建 */
+#define DHCP_RETRY_MS       1000
+/** 取址失败判定时长（秒）：会话内超过该时长仍未拿到租约即上报一次 FAIL；
+ *  取值依据：udhcpc 默认约 9 秒完成一轮重试（-t 3 次 × -T 3 秒），留余量避免误判 */
+#define DHCP_FAIL_REPORT_S  10
 /** udhcpc pidfile 路径前缀，用于停止时精确结束取址进程 */
 #define DHCP_PIDFILE_PRE    "/tmp/.netmgr_udhcpc_"
 
-/** 行判定结果，语义与 netopt 的 SHELL_RET_TYPE 对应 */
-typedef enum {
-    DHCP_LINE_IGNORE = 0, /**< 与本层无关，继续读下一行 */
-    DHCP_LINE_FAIL,       /**< 判定为取址失败，停止读取 */
-    DHCP_LINE_OK          /**< 判定为取址成功，停止读取 */
-} DHCP_LINE_RET;
-
-/** 行判定回调，对应 netopt 的 shell_ret_line */
-typedef DHCP_LINE_RET (*dhcp_line_cb)(const char* linestr);
-
-/** 单个 DHCP 实例，字段与 netopt 的 DHCP_PTHREAD 对应 */
+/** 单个 DHCP 实例（一个接口对应一个常驻取址会话） */
 typedef struct {
     int flag;                   /**< 槽位标志，DIRTY_FLAG 置位表示线程占用中 */
     pthread_t tid;              /**< 取址线程 */
-    int timeout;                /**< 单次请求超时秒数，0 表示由 udhcpc 自行决定 */
-    netmgr_dhcp_cb hand;        /**< 取址状态回调，对应 netopt 的 hand */
+    netmgr_dhcp_cb hand;        /**< 取址状态回调 */
     void* user;                 /**< 回调透传的用户指针，可为空 */
     volatile int stopReq;       /**< 1=已请求停止，线程不再回调取址结果 */
     char ifname[NETMGR_IF_LEN]; /**< 接口名 */
-    char cmdstr[CMDSTR_LEN];    /**< 执行命令，对应 netopt 的 cmdstr */
+    char cmdstr[CMDSTR_LEN];    /**< 执行命令 */
     char pidfile[CMDSTR_LEN];   /**< udhcpc pidfile 路径，停止时按此精确定位进程 */
+    char leaseIp[NETMGR_IP_LEN];/**< 最近一次租约地址，无租约为空串 */
+    int leaseSec;               /**< 最近一次租约时长（秒），未知为 0 */
+    time_t leaseAt;             /**< 租约获取时刻，0 表示当前无租约 */
 } NETMGR_DHCP;
 
 /** DHCP 管理上下文，承载本层全部状态 */
@@ -83,57 +82,26 @@ static NETMGR_DHCP_MGR g_dhcp_mgr = {
 static const int g_dhcpMax = (int)(sizeof(g_dhcp_mgr.item) / sizeof(g_dhcp_mgr.item[0]));
 
 /**
- * @brief 输出行判定：识别 udhcpc 的失败输出
- * @details 对应 netopt 的 hand_retstr，只判失败、不判成功，
- *          未命中即继续读取，读完后按「未捕获失败」视为成功
- * @param linestr 单行输出，不可为空
- * @return DHCP_LINE_FAIL 判定失败；其余忽略
+ * @brief 拼装取址命令
+ * @details -f 前台执行（popen 才能持续读到输出）；
+ *          不加 -n：取不到租约不退出，由 udhcpc 自身持续重试，避免高频重建进程；
+ *          不加 -q：取到租约后常驻并由它自身完成续租，避免租约到期后无人续租；
+ *          不加 -T：发包节奏由 udhcpc 自身默认值决定，本层不暴露无效调节钮
+ * @param item 当前实例，不可为空
  */
-static DHCP_LINE_RET dhcp_line_check(const char* linestr)
+static void dhcp_build_cmd(NETMGR_DHCP* item)
 {
-    if (NULL == linestr)
-        return DHCP_LINE_IGNORE;
+    int len = 0; /* 已写入长度 */
 
-    if (NULL != strcasestr(linestr, "No lease, failing"))
-        return DHCP_LINE_FAIL;
+    if (NULL == item)
+        return;
 
-    return DHCP_LINE_IGNORE;
-}
+    len = snprintf(item->cmdstr, sizeof(item->cmdstr), "udhcpc -i %s -p %s -f 2>&1",
+                   item->ifname, item->pidfile);
+    if (len <= 0 || len >= (int)sizeof(item->cmdstr))
+        item->cmdstr[0] = '\0'; /* 拼接失败时置空，由执行阶段报错 */
 
-/**
- * @brief 执行命令并逐行判定结果，对应 netopt 的 exeShellWait
- * @param cmd     待执行命令，不可为空
- * @param handret 行判定回调，可为空
- * @return 0 未捕获失败；负值为 NETMGRERR_* 错误码（一行未读到视为超时）
- */
-static int dhcp_shell_wait(const char* cmd, dhcp_line_cb handret)
-{
-    FILE* fp = NULL;                           /* 管道流 */
-    char line[RETSTR_BUFF_LEN] = {0};          /* 单行输出缓冲 */
-    int ret = -NETMGRERR_TIMEOUT;              /* 未读到任何输出时按超时处理 */
-
-    if (NULL == cmd || '\0' == cmd[0])
-        return -NETMGRERR_PARAM;
-
-    /* 命令内已合并 stderr，此处只读标准输出 */
-    fp = popen(cmd, "r");
-    if (NULL == fp)
-        return -NETMGRERR_PROC;
-
-    if (NULL != handret)
-    {
-        while (NULL != fgets(line, (int)sizeof(line) - 1, fp))
-        {
-            if (DHCP_LINE_FAIL == handret(line))
-            {
-                ret = -NETMGRERR_DHCP;
-                break;
-            }
-        }
-    }
-
-    (void)pclose(fp);
-    return ret;
+    item->cmdstr[sizeof(item->cmdstr) - 1] = '\0';
 }
 
 /**
@@ -164,73 +132,186 @@ static void dhcp_kill_by_pidfile(const char* path)
 }
 
 /**
- * @brief 拼装取址命令，对应 netopt 的 cmdstr 组装
- * @param item 实例，不可为空
+ * @brief 执行一次取址会话：逐行判定输出，取到租约即回调 SUCC
+ * @details 会话内 udhcpc 常驻：取不到租约由它自身持续重试、取到后由它自身续租，
+ *          因此本函数只会在 stop 请求或 udhcpc 异常退出时返回；续租输出不重复上报 SUCC
+ * @param item     当前实例，不可为空
+ * @param gotLease 输出 1=本次会话曾取到租约，0=未取到，不可为空
+ * @return 0 会话结束；负值为 NETMGRERR_* 错误码（管道建立失败等执行异常）
  */
-static void dhcp_build_cmd(NETMGR_DHCP* item)
+/**
+ * @brief 从 udhcpc 输出行解析租约地址与租约时长
+ * @details 目标形如 "udhcpc: lease of 192.168.1.10 obtained from <server>, lease time 86400"；
+ *          该行给出的是服务器标识而非服务器 IP，故不解析服务器地址
+ * @param line     单行输出，不可为空
+ * @param ip       地址输出缓冲，不可为空
+ * @param ipLen    地址缓冲长度
+ * @param leaseSec 租约时长输出，可为空（不需要时传空）
+ * @return 1 命中租约行；0 非租约行
+ */
+static int dhcp_parse_lease(const char* line, char* ip, int ipLen, int* leaseSec)
 {
-    int len = 0; /* 已写入长度 */
+    const char* pos = NULL; /* 关键字位置 */
+    const char* end = NULL; /* 值结尾 */
+    int n = 0;              /* 值长度 */
 
-    if (NULL == item)
-        return;
+    if (NULL == line || NULL == ip || ipLen <= 0)
+        return 0;
 
-    len = snprintf(item->cmdstr, sizeof(item->cmdstr), "udhcpc -i %s -p %s",
-                   item->ifname, item->pidfile);
-    if (len > 0 && len < (int)sizeof(item->cmdstr) && item->timeout > 0)
+    pos = strcasestr(line, "lease of ");
+    if (NULL == pos)
+        return 0;
+
+    pos += strlen("lease of ");
+    end = strchr(pos, ' ');
+    n = (NULL == end) ? (int)strlen(pos) : (int)(end - pos);
+    if (n <= 0 || n >= ipLen)
+        return 0;
+
+    (void)memcpy(ip, pos, (size_t)n);
+    ip[n] = '\0';
+
+    if (NULL != leaseSec)
     {
-        len += snprintf(item->cmdstr + len, sizeof(item->cmdstr) - (size_t)len,
-                        " -nq -T %d", item->timeout);
+        pos = strcasestr(line, "lease time ");
+        *leaseSec = (NULL == pos) ? 0 : atoi(pos + strlen("lease time "));
     }
-    if (len > 0 && len < (int)sizeof(item->cmdstr))
-        (void)snprintf(item->cmdstr + len, sizeof(item->cmdstr) - (size_t)len, " 2>&1");
-
-    item->cmdstr[sizeof(item->cmdstr) - 1] = '\0';
+    return 1;
 }
 
 /**
- * @brief 取址线程：执行命令、回调状态、按回调要求重试，退出时清脏标志
+ * @brief 执行一次取址会话：逐行判定输出，维护租约快照并按状态变化回调
+ * @details 会话内 udhcpc 常驻：取不到租约由它自身持续重试、取到后由它自身续租，
+ *          因此本函数只会在 stop 请求或 udhcpc 异常退出时返回
+ * @param item     当前实例，不可为空
+ * @param gotLease 输出 1=本次会话曾取到租约，0=未取到，不可为空
+ * @return 0 会话结束；负值为 NETMGRERR_* 错误码（管道建立失败等执行异常）
+ */
+static int dhcp_session(NETMGR_DHCP* item, int* gotLease)
+{
+    FILE* fp = NULL;                  /* 管道流 */
+    char line[RETSTR_BUFF_LEN] = {0}; /* 单行输出缓冲 */
+    char ip[NETMGR_IP_LEN] = {0};     /* 解析出的租约地址 */
+    time_t begin = 0;                 /* 本轮取址计时起点 */
+    int leaseSec = 0;                 /* 解析出的租约时长 */
+    int succ = 0;                     /* 1=当前处于持有租约状态 */
+    int failReported = 0;             /* 1=本轮取址已上报过 FAIL */
+
+    if (NULL == item || NULL == gotLease)
+        return -NETMGRERR_PARAM;
+
+    *gotLease = 0;
+    fp = popen(item->cmdstr, "r");
+    if (NULL == fp)
+        return -NETMGRERR_PROC;
+
+    begin = time(NULL);
+    while (NULL != fgets(line, (int)sizeof(line) - 1, fp))
+    {
+        if (item->stopReq)
+            break;
+
+        /* 租约行：刷新租约快照；从"未持有"变为"持有"时上报 SUCC（LOST 后重新取到同样上报） */
+        if (0 != dhcp_parse_lease(line, ip, (int)sizeof(ip), &leaseSec))
+        {
+            pthread_mutex_lock(&g_dhcp_mgr.lock);
+            (void)snprintf(item->leaseIp, sizeof(item->leaseIp), "%s", ip);
+            item->leaseSec = leaseSec;
+            item->leaseAt = time(NULL);
+            pthread_mutex_unlock(&g_dhcp_mgr.lock);
+
+            *gotLease = 1;
+            if (0 == succ)
+            {
+                succ = 1;
+                failReported = 0;
+                begin = time(NULL);
+                if (NULL != item->hand)
+                    item->hand(NETMGR_DHCP_SUCC, item->ifname, 0, item->user);
+            }
+            continue;
+        }
+
+        /* 已持有租约却再次进入发现阶段：续租失败，上报一次 LOST 并重新开始计时 */
+        if (0 != succ && NULL != strcasestr(line, "sending discover"))
+        {
+            succ = 0;
+            failReported = 0;
+            begin = time(NULL);
+            if (NULL != item->hand)
+                item->hand(NETMGR_DHCP_LOST, item->ifname, 0, item->user);
+            continue;
+        }
+
+        /* 本轮超过判定时长仍未取得租约：说明对端无响应，上报一次 FAIL；
+           udhcpc 会在会话内继续重试，成功后按上面的分支上报 SUCC 形成状态翻转 */
+        if (0 == succ && 0 == failReported && NULL != item->hand &&
+            (time(NULL) - begin) >= DHCP_FAIL_REPORT_S)
+        {
+            failReported = 1;
+            item->hand(NETMGR_DHCP_FAIL, item->ifname, -NETMGRERR_DHCP, item->user);
+        }
+    }
+
+    (void)pclose(fp);
+    return 0;
+}
+
+/**
+ * @brief 会话重建/重试前的节流等待，分片休眠以便 stop 及时生效
+ * @param item 当前实例，不可为空
+ */
+static void dhcp_throttle(const NETMGR_DHCP* item)
+{
+    int i = 0; /* 休眠分片下标，从 0 开始 */
+
+    for (i = 0; i < DHCP_RETRY_MS / 100; ++i)
+    {
+        if (item->stopReq)
+            return;
+        usleep(100 * 1000);
+    }
+}
+
+/**
+ * @brief 取址线程：维持取址会话，按回调要求重试，退出时清脏标志
+ * @details 会话正常结束（udhcpc 退出）时按节流间隔重建会话，保证接口地址可续；
+ *          失败时经回调决定是否重试，重试次数由调用方控制
  * @param arg 指向占用的 NETMGR_DHCP 实例
  * @return 恒定返回空指针
  */
 static void* dhcp_run(void* arg)
 {
     NETMGR_DHCP* item = (NETMGR_DHCP*)arg; /* 当前实例 */
-    NETMGR_DHCP_RET answer = NETMGR_DHCP_RET_OK; /* 回调处理结果 */
-    int ret = 0;                                 /* 本次执行结果 */
+    int gotLease = 0;                      /* 本次会话是否曾取到租约 */
+    int ret = 0;                           /* 本次会话结果 */
 
     if (NULL == item)
         return NULL;
 
-    /* 命令与「已发起取址」状态只与接口配置有关：超时等参数在启动时一次性确定，
-       运行期不存在调整入口，因此命令只构建一次、RUNNING 只上报一次，重试直接复用 */
+    /* 命令与「已发起取址」状态只与接口配置有关：启动时一次性确定，
+       运行期不存在调整入口，因此命令只构建一次、RUNNING 只上报一次，重建直接复用 */
     dhcp_build_cmd(item);
     if (NULL != item->hand)
-        (void)item->hand(NETMGR_DHCP_RUNNING, item->ifname, 0, item->user);
+        item->hand(NETMGR_DHCP_RUNNING, item->ifname, 0, item->user);
 
-    do
+    while (!item->stopReq)
     {
-        ret = dhcp_shell_wait(item->cmdstr, dhcp_line_check);
-
-        /* 主动停止：结果无意义，不再回调 */
+        gotLease = 0;
+        ret = dhcp_session(item, &gotLease);
         if (item->stopReq)
             break;
 
-        if (ret < 0 && -NETMGRERR_TIMEOUT != ret)
-        {
-            /* 失败原因只经回调上报；是否需要重取、重取多少次均由调用方决定 */
-            answer = (NULL != item->hand) ?
-                     item->hand(NETMGR_DHCP_FAIL, item->ifname, ret, item->user) :
-                     NETMGR_DHCP_RET_OK;
-            if (NETMGR_DHCP_RET_AGAIN == answer && !item->stopReq)
-                continue;
-            break;
-        }
+        /* 从未取到租约即结束（管道建立失败或 udhcpc 异常退出，如命令不存在）：
+           先回调上报；无服务器属进程内部重试，走不到这里 */
+        if (0 == gotLease && NULL != item->hand)
+            item->hand(NETMGR_DHCP_FAIL, item->ifname,
+                       (ret < 0) ? ret : -NETMGRERR_DHCP, item->user);
 
-        /* 未捕获失败输出（含 udhcpc 后台化后 shell 正常返回）视为取址成功 */
-        if (NULL != item->hand)
-            (void)item->hand(NETMGR_DHCP_SUCC, item->ifname, 0, item->user);
-        break;
-    } while (1);
+        /* 会话结束一律节流后重建：已取到租约的属续租中断（尽量短），
+           异常退出的保持重试，直到 stop 为止 */
+        dhcp_throttle(item);
+    }
 
     /* 退出：清脏标志并唤醒等待方，接口名保留供下次复用 */
     pthread_mutex_lock(&g_dhcp_mgr.lock);
@@ -241,20 +322,20 @@ static void* dhcp_run(void* arg)
 }
 
 /**
- * @brief 在指定接口上启动 DHCP 取址，结果经回调返回
- * @param ifname  接口名，不可为空
- * @param timeout 单次请求超时秒数，0 表示由 udhcpc 自行决定
- * @param cb      取址状态回调，可为空
- * @param user    回调透传的用户指针，可为空
+ * @brief 在指定接口上启动 DHCP 取址会话，结果经回调返回
+ * @details 发包节奏取 udhcpc 默认值，本层不提供调节入口
+ * @param ifname 接口名，不可为空
+ * @param cb     取址状态回调，可为空
+ * @param user   回调透传的用户指针，可为空
  * @return 0 已受理；负值为 NETMGRERR_* 错误码
  */
-int netmgr_dhcp_start(const char* ifname, int timeout, netmgr_dhcp_cb cb, void* user)
+int netmgr_dhcp_start(const char* ifname, netmgr_dhcp_cb cb, void* user)
 {
     NETMGR_DHCP* item = NULL; /* 本次占用的实例 */
     int idx = -1;             /* 首个空闲槽位下标 */
     int i = 0;                /* 实例表下标，从 0 开始 */
 
-    if (NULL == ifname || '\0' == ifname[0] || timeout < 0)
+    if (NULL == ifname || '\0' == ifname[0])
         return -NETMGRERR_PARAM;
 
     /* 第 1 步：查重并挑槽位，对应 netopt 的脏标志遍历 */
@@ -265,7 +346,7 @@ int netmgr_dhcp_start(const char* ifname, int timeout, netmgr_dhcp_cb cb, void* 
             0 == strncmp(g_dhcp_mgr.item[i].ifname, ifname, sizeof(g_dhcp_mgr.item[i].ifname)))
         {
             pthread_mutex_unlock(&g_dhcp_mgr.lock);
-            return -NETMGRERR_DHCP; /* 该接口已有取址线程 */
+            return -NETMGRERR_DHCP; /* 该接口已有取址会话 */
         }
         if (idx < 0 && !(DIRTY_FLAG & g_dhcp_mgr.item[i].flag))
             idx = i;
@@ -278,10 +359,12 @@ int netmgr_dhcp_start(const char* ifname, int timeout, netmgr_dhcp_cb cb, void* 
 
     /* 第 2 步：占用槽位并登记本次取址参数 */
     item = &g_dhcp_mgr.item[idx];
-    item->timeout = timeout;
     item->hand = cb;
     item->user = user;
     item->stopReq = 0;
+    item->leaseIp[0] = '\0';
+    item->leaseSec = 0;
+    item->leaseAt = 0;
     (void)snprintf(item->ifname, sizeof(item->ifname), "%s", ifname);
     (void)snprintf(item->pidfile, sizeof(item->pidfile), DHCP_PIDFILE_PRE "%s.pid", ifname);
 
@@ -304,7 +387,7 @@ int netmgr_dhcp_start(const char* ifname, int timeout, netmgr_dhcp_cb cb, void* 
 }
 
 /**
- * @brief 停止指定接口上的 DHCP 取址，并回收最近一次取址结果
+ * @brief 停止指定接口上的 DHCP 取址会话
  * @param ifname 接口名，不可为空
  * @return 0 成功（未启动时同样返回 0）；负值为 NETMGRERR_* 错误码
  */
@@ -333,6 +416,9 @@ int netmgr_dhcp_stop(const char* ifname)
         return 0;
     }
     item->stopReq = 1; /* 主动停止，线程不再回调取址结果 */
+    item->leaseIp[0] = '\0';
+    item->leaseSec = 0;
+    item->leaseAt = 0;
     pthread_mutex_unlock(&g_dhcp_mgr.lock);
 
     /* 按 pidfile 结束取址进程：popen 拿不到子进程号，pidfile 是 udhcpc 提供的定位方式 */
@@ -355,11 +441,12 @@ int netmgr_dhcp_stop(const char* ifname)
 }
 
 /**
- * @brief 查询指定接口的 DHCP 是否仍在取址中
+ * @brief 查询指定接口的 DHCP 会话是否在运行
+ * @details 会话从 start 建立到 stop 结束期间恒为运行中，续租阶段同样计入
  * @param ifname 接口名，不可为空
- * @return 1 取址线程运行中；0 已结束或未启动
+ * @return 1 会话运行中；0 未启动或会话已结束
  */
-int netmgr_dhcp_busy(const char* ifname)
+int netmgr_dhcp_running(const char* ifname)
 {
     int busy = 0; /* 1=运行中 */
     int i = 0;    /* 实例表下标，从 0 开始 */
@@ -379,4 +466,58 @@ int netmgr_dhcp_busy(const char* ifname)
     }
     pthread_mutex_unlock(&g_dhcp_mgr.lock);
     return busy;
+}
+
+/**
+ * @brief 查询指定接口当前租约信息
+ * @details 剩余租期按「获取时刻 + 租约时长 - 当前时刻」推算，过期后 valid 置 0
+ * @param ifname 接口名，不可为空
+ * @param info   输出租约信息，不可为空
+ * @return 0 成功（无会话或无租约时 valid=0）；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_dhcp_lease_get(const char* ifname, NETMGR_DHCP_LEASE* info)
+{
+    NETMGR_DHCP* item = NULL; /* 命中的实例 */
+    time_t now = 0;           /* 查询时刻 */
+    time_t expire = 0;        /* 租约到期时刻 */
+    int i = 0;                /* 实例表下标，从 0 开始 */
+
+    if (NULL == ifname || '\0' == ifname[0] || NULL == info)
+        return -NETMGRERR_PARAM;
+
+    memset(info, 0, sizeof(*info));
+
+    pthread_mutex_lock(&g_dhcp_mgr.lock);
+    for (i = 0; i < g_dhcpMax; ++i)
+    {
+        if (0 == strncmp(g_dhcp_mgr.item[i].ifname, ifname, sizeof(g_dhcp_mgr.item[i].ifname)))
+        {
+            item = &g_dhcp_mgr.item[i];
+            break;
+        }
+    }
+
+    if (NULL != item && 0 != item->leaseAt)
+    {
+        now = time(NULL);
+        (void)snprintf(info->ip, sizeof(info->ip), "%s", item->leaseIp);
+        info->leaseSec = item->leaseSec;
+        if (item->leaseSec <= 0)
+        {
+            /* 租期未知（输出未给 lease time）：地址在位即视为持有，剩余期数置 0 */
+            info->valid = 1;
+            info->remainSec = 0;
+        }
+        else
+        {
+            expire = item->leaseAt + (time_t)item->leaseSec;
+            if (expire > now)
+            {
+                info->remainSec = (int)(expire - now);
+                info->valid = 1;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_dhcp_mgr.lock);
+    return 0;
 }
