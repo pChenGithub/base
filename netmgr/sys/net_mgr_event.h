@@ -2,9 +2,10 @@
  * @file net_mgr_event.h
  * @brief netmgr 系统适配层：netlink 事件监听（sys 层，可独立使用）
  * @details 采用「接收线程 + 事件回调」模型：本层负责解析 netlink 报文并给出
- *          结构化事件（类别、地址族、标志位、接口名、地址/掩码、网关、metric），
+ *          结构化事件（类别 + 接口名，按类别附带地址/掩码或路由信息），
  *          具体状态判定由调用方完成，本层不含任何链路状态机。
- *          事件类别与内核消息类型一一对应，新增事件只需增加枚举值与解析分支。
+ *          链路方向由接口标志解析得出（LINK_UP / LINK_DOWN），失效删除为 LINK_DEL，
+ *          不做“消息类型与事件类别一一对应”的机械映射。
  *
  * 使用约束（独立调用方须知）：
  * 1) 单实例：进程内只维护一份监听上下文，重复 open 直接返回成功；
@@ -24,53 +25,59 @@ extern "C" {
 /** 订阅组掩码：0 表示使用默认组（链路 + IPv4 地址 + IPv4 路由） */
 #define NETMGR_EVENT_GROUPS_DEFAULT  0u
 
-/** netlink 事件类别，与内核消息类型一一对应 */
+/**
+ * netlink 事件类别
+ * @note 链路方向按**真实接口标志**解析，而非仅看内核消息类型：插线与拔线内核都发
+ *       RTM_NEWLINK，解析时用 IFF_UP + IFF_RUNNING 判定为 LINK_UP / LINK_DOWN；
+ *       只有接口被真正删除（RTM_DELLINK）才是 LINK_DEL
+ */
 typedef enum {
-    NETMGR_NEV_LINK_ADD = 0, /**< 链路新增或状态刷新（RTM_NEWLINK） */
-    NETMGR_NEV_LINK_DEL,     /**< 链路删除（RTM_DELLINK） */
-    NETMGR_NEV_ADDR_ADD,     /**< IPv4 地址新增（RTM_NEWADDR） */
+    NETMGR_NEV_LINK_UP = 0,  /**< 链路可用（管理态 UP 且 carrier 在位） */
+    NETMGR_NEV_LINK_DOWN,    /**< 链路不可用（插线前/拔线后/管理态关闭） */
+    NETMGR_NEV_LINK_DEL,     /**< 链路删除（RTM_DELLINK），接口已从系统移除 */
+    NETMGR_NEV_ADDR_ADD,     /**< IPv4 地址新增或变更（RTM_NEWADDR） */
     NETMGR_NEV_ADDR_DEL,     /**< IPv4 地址删除（RTM_DELADDR） */
-    NETMGR_NEV_ROUTE_ADD,    /**< 路由新增（RTM_NEWROUTE） */
+    NETMGR_NEV_ROUTE_ADD,    /**< 路由新增或变更（RTM_NEWROUTE） */
     NETMGR_NEV_ROUTE_DEL,    /**< 路由删除（RTM_DELROUTE） */
     NETMGR_NEV_LOST          /**< 内核事件缓冲溢出，已有事件丢失，建议做一次全量刷新 */
 } NETMGR_NEV_TYPE;
 
-/**
- * @brief 判断事件方向是否为「新增/上线」
- * @param type 事件类别
- * @return 1 新增/上线；0 删除/下线或事件丢失
- */
-#define NETMGR_NEV_IS_ADD(type) \
-    (NETMGR_NEV_LINK_ADD == (type) || NETMGR_NEV_ADDR_ADD == (type) || \
-     NETMGR_NEV_ROUTE_ADD == (type))
+/** IPv4 地址事件载荷：NETMGR_NEV_ADDR_ADD / ADDR_DEL */
+typedef struct {
+    char ip[NETMGR_IP_LEN];   /**< 地址（IFA_LOCAL 优先） */
+    char mask[NETMGR_IP_LEN]; /**< 由前缀长度换算的掩码 */
+} NETMGR_NEVP_ADDR;
+
+/** 路由事件载荷：NETMGR_NEV_ROUTE_ADD / ROUTE_DEL */
+typedef struct {
+    int metric;               /**< 路由 metric（RTA_PRIORITY），无该属性为 0 */
+    int isDefault;            /**< 1=主表默认路由（RT_TABLE_MAIN 且目的前缀长度为 0） */
+    char gate[NETMGR_IP_LEN]; /**< 下一跳网关（RTA_GATEWAY），直连路由为空串 */
+} NETMGR_NEVP_ROUTE;
 
 /**
- * 单条 netlink 事件内容
- * @note 字段按事件类别有效，未涉及的字段为 0 或空串：
- *       LINK_ADD/LINK_DEL  ：family、flags（接口标志 IFF_*）
- *       ADDR_ADD/ADDR_DEL  ：family、flags（地址标志 IFA_F_*）、ip、mask
- *       ROUTE_ADD/ROUTE_DEL：family、metric、isDefault、gate
- *       LOST               ：仅 type 有效
+ * 单条 netlink 事件内容：type / ifname 为公共字段，其余按类型取 u
+ * @note 载荷映射（禁止跨类型读取 u）：
+ *       LINK_UP / LINK_DOWN / LINK_DEL → 无载荷（方向已由类别表达，接口名见 ifname）
+ *       ADDR_ADD / ADDR_DEL            → u.addr（ip、mask）
+ *       ROUTE_ADD / ROUTE_DEL          → u.route（metric、isDefault、gate）
+ *       LOST                           → 仅 type 有效
  */
 typedef struct {
-    NETMGR_NEV_TYPE type;        /**< 事件类别，方向由类别本身表达 */
-    int family;                  /**< 地址族，取 AF_UNSPEC / AF_INET / AF_INET6 */
-    int flags;                   /**< LINK：接口标志位（IFF_*）；ADDR：地址标志（IFA_F_*）；其余为 0 */
-    int metric;                  /**< 路由 metric（RTA_PRIORITY）；非路由事件为 0 */
-    int isDefault;               /**< 1=默认路由（仅路由事件有效） */
-    char ifname[NETMGR_IF_LEN];  /**< 相关接口名，无法解析时为空串 */
-    char ip[NETMGR_IP_LEN];      /**< IPv4 地址事件中的地址，其余事件为空串 */
-    char mask[NETMGR_IP_LEN];    /**< IPv4 地址事件中的接口掩码（由前缀长度换算），其余事件为空串 */
-    char gate[NETMGR_IP_LEN];    /**< 路由事件中的下一跳网关（RTA_GATEWAY），其余事件为空串 */
+    NETMGR_NEV_TYPE type;       /**< 事件类别（判别符） */
+    char ifname[NETMGR_IF_LEN]; /**< 相关接口名，无法解析时为空串（LOST 与多路径路由可能为空） */
+    union {
+        NETMGR_NEVP_ADDR  addr;  /**< 地址事件载荷 */
+        NETMGR_NEVP_ROUTE route; /**< 路由事件载荷 */
+    } u; /**< 按 type 取用的载荷；链路事件无载荷 */
 } NETMGR_NEV;
 
 /**
- * @brief netlink 事件回调，在事件接收线程上下文执行
+ * @brief netlink 事件回调，在事件接收线程上下文执行（只做通知，无返回值）
  * @param ev   事件内容，仅在回调期间有效，不可保存指针
  * @param user 注册回调时传入的用户指针，可为空
- * @return 0 继续监听；返回值当前被忽略，不影响接收线程
  */
-typedef int (*netmgr_nev_cb)(const NETMGR_NEV* ev, void* user);
+typedef void (*netmgr_nev_cb)(const NETMGR_NEV* ev, void* user);
 
 /* ===== 操作 ===== */
 
