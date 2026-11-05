@@ -47,11 +47,13 @@ int netmgr_iface_exist(const char* ifname)
 }
 
 /**
- * @brief 判断接口物理链路是否连通
+ * @brief 判断接口是否可用（就绪）
+ * @details 管理态 IFF_UP 与 IFF_RUNNING 同时置位才算就绪；内核自 2.6.36 起
+ *          在 IFF_RUNNING 中反映 carrier（operstate），故不再另读 sysfs
  * @param ifname 接口名，不可为空
- * @return 1 连通；0 未连通或查询失败
+ * @return 1 可用；0 不可用（管理态关闭 / 无载波 / 查询失败）
  */
-int netmgr_iface_up(const char* ifname)
+int netmgr_iface_ready(const char* ifname)
 {
     struct ifreq req = {0};  /* ioctl 参数：接口名与接口标志 */
     int fd = -1;       /* 临时控制 socket */
@@ -73,7 +75,11 @@ int netmgr_iface_up(const char* ifname)
     {
         return 0;
     }
-    return (req.ifr_flags & IFF_RUNNING) ? 1 : 0;
+
+    /* 管理态与载波同时就位才算可用：IFF_RUNNING 由内核按 carrier（operstate）推导。
+       前提为目标内核 ≥ 2.6.36（此版本起 IFF_RUNNING 才含 carrier）；
+       更老内核需改为「读 sysfs carrier 优先、不可读再退回 IFF_RUNNING」 */
+    return ((req.ifr_flags & IFF_UP) && (req.ifr_flags & IFF_RUNNING)) ? 1 : 0;
 }
 
 /**

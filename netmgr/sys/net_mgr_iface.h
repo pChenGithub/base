@@ -27,11 +27,16 @@ extern "C" {
 int netmgr_iface_exist(const char* ifname);
 
 /**
- * @brief 判断接口物理链路是否连通
+ * @brief 判断接口是否可用（就绪）
+ * @details 判定为合取：管理态 IFF_UP 与 IFF_RUNNING 同时置位才算就绪；
+ *          内核自 2.6.36 起在 IFF_RUNNING 中反映 carrier（operstate），不再另读 sysfs
+ * @note 前提：目标内核 ≥ 2.6.36。更老内核的 IFF_RUNNING 仅表示管理态已 UP、
+ *       不反映 carrier，拔线将无法感知；若需支持老内核，应改为「carrier 优先读取，
+ *       不可读时退回 IFF_RUNNING」，而不在本函数内混用两种判据
  * @param ifname 接口名，不可为空
- * @return 1 连通；0 未连通或查询失败
+ * @return 1 可用；0 不可用（管理态关闭 / 无载波 / 查询失败）
  */
-int netmgr_iface_up(const char* ifname);
+int netmgr_iface_ready(const char* ifname);
 
 /**
  * @brief 读取接口当前 IPv4 地址
