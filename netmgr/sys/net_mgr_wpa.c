@@ -1279,10 +1279,21 @@ int netmgr_wpa_event_close(void)
         return 0;
     }
 
-    /* 接收线程不持本锁，先停线程再注销订阅，避免注销期间还在收事件 */
+    /* ------------------------------------------------------------------
+     * 自线程检测：业务在 wpa 事件回调里关闭通道时，close 会在接收线程内被调用
+     * ------------------------------------------------------------------
+     * 可达调用链（回调契约允许）：接收线程 → 业务回调(netmgr_wev_cb)
+     *   → netmgr_wpa_event_close() / netmgr_wpa_close()
+     * 若在这里无条件 pthread_join(g_wpaEv.thread)：等的是自己 → **硬死锁**。
+     * 因此仅置 running=0 跳过 join；本线程从回调返回后
+     * while (g_wpaEv.running) 立即为假，自行退出。
+     * DETACH / close / 解绑本端地址仍在本函数完成，socket 不会泄漏。
+     * ------------------------------------------------------------------ */
     g_wpaEv.running = 0;
-    pthread_join(g_wpaEv.thread, NULL);
+    if (0 == pthread_equal(pthread_self(), g_wpaEv.thread))
+        pthread_join(g_wpaEv.thread, NULL);
 
+    /* 注销订阅并释放通道：即使不 join，socket 也在这里统一关闭，避免泄漏 */
     (void)wpa_rsp(g_wpaEv.sock, "DETACH", buf, (int)sizeof(buf));
     close(g_wpaEv.sock);
     g_wpaEv.sock = -1;

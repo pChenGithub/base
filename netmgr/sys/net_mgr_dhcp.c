@@ -432,6 +432,32 @@ int netmgr_dhcp_stop(const char* ifname)
     item->leaseIp[0] = '\0';
     item->leaseSec = 0;
     item->leaseAt = 0;
+    /* ------------------------------------------------------------------
+     * 自线程检测：业务在 DHCP 回调里关链路时，stop 会在取址线程内被调用
+     * ------------------------------------------------------------------
+     * 可达调用链（不是误用，回调契约明确允许）：
+     *   取址线程 → item->hand() = core_dhcp_cb → core_dispatch
+     *            → 业务 netmgr_event_cb 回调
+     *            → netmgr_core_link_enable(type, 0) / netmgr_core_stop()
+     *            → core_link_reset → ops->close → netmgr_dhcp_stop(ifname)
+     * 此时若继续执行下面的“等待 DIRTY_FLAG 清零”，等的是本线程自己的收尾：
+     *   · 若用 pthread_join：自己 join 自己 → 必然死锁；
+     *   · 若用条件变量等待：白等满 DHCP_STOP_S(3 秒) 后返回
+     *     -NETMGRERR_TIMEOUT —— 这是假错误（stopReq 已置、udhcpc 已杀），
+     *     业务会误判“关闭失败”，可能触发无意义的重试或错误上报。
+     * 正确处理：置 stopReq 后立即返回 0（“停止请求已受理”），
+     *   收尾交给本线程从回调返回后、主循环 while (!stopReq) 退出时的自然清理
+     *   （清 DIRTY_FLAG + 广播唤醒）。
+     * 仍然要 kill：本线程此刻多半阻塞在 popen 读管道上，不结束 udhcpc
+     *   就等不到 EOF，退出会被拖到下一次输出，收尾反而更慢。
+     * 约束：本路径返回时槽位尚未释放，同一接口立即重启会话会失败（预期行为）。
+     * ------------------------------------------------------------------ */
+    if (0 != pthread_equal(pthread_self(), item->tid))
+    {
+        pthread_mutex_unlock(&g_dhcp_mgr.lock);
+        dhcp_kill_by_pidfile(item->pidfile);
+        return 0;
+    }
     pthread_mutex_unlock(&g_dhcp_mgr.lock);
 
     /* 按 pidfile 结束取址进程：popen 拿不到子进程号，pidfile 是 udhcpc 提供的定位方式 */
