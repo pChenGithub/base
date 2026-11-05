@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
@@ -381,6 +382,44 @@ static int wpa_ev_field(const char* text, const char* key, char* out, int len)
  * @param ev   事件输出，不可为空
  * @return 1 为可上报事件；0 无法识别，调用方应忽略
  */
+/**
+ * @brief 从 CONNECTED 事件正文提取 BSSID
+ * @details wpa 的 CONNECTED 行不含 bssid= 键，BSSID 出现在
+ *          "CTRL-EVENT-CONNECTED - Connection to <xx:xx:xx:xx:xx:xx> completed"
+ * @param text 事件正文，不可为空
+ * @param out  输出缓冲，不可为空
+ * @param len  输出缓冲长度
+ */
+static void wpa_ev_conn_bssid(const char* text, char* out, int len)
+{
+    const char* pos = NULL; /* MAC 起点 */
+    int i = 0;              /* 字符下标，从 0 开始 */
+    int ok = 1;             /* 1=格式符合 MAC */
+
+    if (NULL == text || NULL == out || len < NETMGR_BSSID_LEN)
+        return;
+
+    pos = strstr(text, "Connection to ");
+    if (NULL == pos)
+        return;
+    pos += strlen("Connection to ");
+    if (strlen(pos) < 17)
+        return;
+
+    /* 形如 xx:xx:xx:xx:xx:xx：偶数位为十六进制、每三位一个冒号 */
+    for (i = 0; i < 17 && 0 != ok; ++i)
+    {
+        if (2 == (i % 3))
+            ok = (':' == pos[i]) ? 1 : 0;
+        else
+            ok = (0 != isxdigit((unsigned char)pos[i])) ? 1 : 0;
+    }
+    if (0 == ok)
+        return;
+
+    (void)snprintf(out, (size_t)len, "%.17s", pos);
+}
+
 static int wpa_ev_parse(const char* text, NETMGR_WEV* ev)
 {
     char num[WPA_ID_LEN] = {0}; /* 数值字段取值缓冲 */
@@ -399,8 +438,8 @@ static int wpa_ev_parse(const char* text, NETMGR_WEV* ev)
     if (0 == strncmp(name, "CONNECTED", strlen("CONNECTED")))
     {
         ev->type = NETMGR_WEV_CONNECTED;
-        (void)wpa_ev_field(text, "ssid=", ev->ssid, (int)sizeof(ev->ssid));
-        (void)wpa_ev_field(text, "bssid=", ev->bssid, (int)sizeof(ev->bssid));
+        /* 该行不含 ssid=/bssid= 键：BSSID 从 "Connection to <mac>" 提取，SSID 需另查 STATUS */
+        wpa_ev_conn_bssid(text, ev->bssid, (int)sizeof(ev->bssid));
         return 1;
     }
     if (0 == strncmp(name, "DISCONNECTED", strlen("DISCONNECTED")))
@@ -408,7 +447,7 @@ static int wpa_ev_parse(const char* text, NETMGR_WEV* ev)
         ev->type = NETMGR_WEV_DISCONNECTED;
         (void)wpa_ev_field(text, "bssid=", ev->bssid, (int)sizeof(ev->bssid));
         if (wpa_ev_field(text, "reason=", num, (int)sizeof(num)))
-            ev->reason = atoi(num);
+            ev->u.disc.reason = atoi(num);
         return 1;
     }
     if (0 == strncmp(name, "SCAN-RESULTS", strlen("SCAN-RESULTS")))
@@ -421,7 +460,7 @@ static int wpa_ev_parse(const char* text, NETMGR_WEV* ev)
         ev->type = NETMGR_WEV_ASSOC_REJECT;
         (void)wpa_ev_field(text, "bssid=", ev->bssid, (int)sizeof(ev->bssid));
         if (wpa_ev_field(text, "status_code=", num, (int)sizeof(num)))
-            ev->status = atoi(num);
+            ev->u.reject.status = atoi(num);
         return 1;
     }
     if (0 == strncmp(name, "TERMINATING", strlen("TERMINATING")))

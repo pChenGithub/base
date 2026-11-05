@@ -74,20 +74,31 @@ typedef enum {
     NETMGR_WEV_TERMINATING       /**< wpa_supplicant 进程退出，事件通道随之失效 */
 } NETMGR_WEV_TYPE;
 
+/** 断开载荷：NETMGR_WEV_DISCONNECTED */
+typedef struct {
+    int reason; /**< 断开原因码（CTRL-EVENT-DISCONNECTED 的 reason=） */
+} NETMGR_WEVP_DISC;
+
+/** 关联被拒载荷：NETMGR_WEV_ASSOC_REJECT */
+typedef struct {
+    int status; /**< 关联状态码（CTRL-EVENT-ASSOC-REJECT 的 status_code=） */
+} NETMGR_WEVP_REJECT;
+
 /**
- * 单条 wpa 事件内容
- * @note 字段按事件类别有效，未涉及的字段为 0 或空串：
- *       CONNECTED    ：ssid、bssid
- *       DISCONNECTED ：bssid、reason（断开原因码）
- *       ASSOC_REJECT ：bssid、status（状态码）
- *       其余类别仅 type 有效
+ * 单条 wpa 事件内容：type / bssid 为公共字段，其余按类别取 u
+ * @note 载荷映射（禁止跨类型读取 u）：
+ *       CONNECTED              → 无载荷（BSSID 见公共字段 bssid，SSID 需经 netmgr_wpa_status 查询）
+ *       DISCONNECTED           → u.disc（reason）
+ *       ASSOC_REJECT           → u.reject（status）
+ *       SCAN_DONE / TERMINATING → 无载荷（bssid 为空串）
  */
 typedef struct {
-    NETMGR_WEV_TYPE type;         /**< 事件类别 */
-    int reason;                   /**< 断开原因码（仅 DISCONNECTED 有效） */
-    int status;                   /**< 关联拒绝状态码（仅 ASSOC_REJECT 有效） */
-    char ssid[NETMGR_SSID_LEN];   /**< 相关 SSID，无则为空串 */
+    NETMGR_WEV_TYPE type;         /**< 事件类别（判别符） */
     char bssid[NETMGR_BSSID_LEN]; /**< 相关 BSSID，无则为空串 */
+    union {
+        NETMGR_WEVP_DISC   disc;   /**< DISCONNECTED 载荷 */
+        NETMGR_WEVP_REJECT reject; /**< ASSOC_REJECT 载荷 */
+    } u; /**< 按 type 取用的载荷；CONNECTED / SCAN_DONE / TERMINATING 无载荷 */
 } NETMGR_WEV;
 
 /**
