@@ -2,7 +2,8 @@
  * @file net_mgr_wpa.c
  * @brief netmgr 系统适配层：wpa_supplicant 控制接口实现（sys 层）
  * @details 控制协议只做「发一行命令、收一条回复」：
- *          请求为 CTRL-REQ-<序号>-<长度>\n<命令>，回复为 CTRL-RSP-<序号>-<长度>\n<正文>；
+ *          协议为裸命令/裸回包（与 wpa_cli 一致）：命令正文直接下发，回包正文直接解析，
+ *          失败以 FAIL 起头；客户端必须 bind 本地地址，否则服务端回包无处投递；
  *          正文以 FAIL 开头即视为命令失败。本层不关心业务策略，
  *          wpa_supplicant 的启动/结束与进程生命周期归调用方编排，本层只提供协议与通道能力。
  *          回复超长时以错误码上抛，不做静默截断；扫描结果量级较大，用堆缓冲接收。
@@ -12,6 +13,7 @@
 #include "net_mgr_wpa.h"
 
 #include "net_mgr_err.h"
+#include "net_mgr_proc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +21,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <time.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
@@ -26,6 +29,8 @@
 
 /** wpa_supplicant 控制接口目录 */
 #define WPA_DIR         "/var/run/wpa_supplicant"
+/** wpa_supplicant 进程名，用于独占启动与结束（比对上 /proc/<pid>/comm） */
+#define WPA_PROC_NAME   "wpa_supplicant"
 /** 控制接口路径长度，与 sockaddr_un.sun_path 对齐 */
 #define WPA_PATH_LEN    108
 /** 命令与短回复缓冲长度（STATUS / ADD_NETWORK 等） */
@@ -38,8 +43,14 @@
 #define WPA_ID_LEN      16
 /** 控制接口轮询间隔（微秒） */
 #define WPA_POLL_US     100000
-/** 控制接口就绪默认等待次数，共 2 秒 */
-#define WPA_OPEN_MAX    20
+/** 控制接口就绪默认等待时长（毫秒）：按挂钟计，覆盖慢板与 P2P 设备初始化 */
+#define WPA_OPEN_MS     10000
+/** 通道可用性探测次数（每次间隔 WPA_POLL_US）：覆盖 wpa 初始化未就绪的窗口 */
+#define WPA_PROBE_MAX   10
+/** 客户端本地地址路径：按进程号与通道区分，避免同机多实例冲突 */
+#define WPA_CLI_PATH    "/tmp/netmgr_wpa.%d.%s.sock"
+/** 探测单次收发超时（毫秒）：通道不可用时不必等满命令超时 */
+#define WPA_PROBE_TIMEOUT_MS 300
 /** 关联完成默认等待次数，共 10 秒 */
 #define WPA_CONN_MAX    100
 /** 扫描结束默认等待次数，共 8 秒；全信道/双频扫描耗时 4~8 秒，取大值避免误报超时 */
@@ -48,8 +59,6 @@
 #define WPA_EV_TIMEOUT_MS 500
 /** WPA 预共享密钥最小长度 */
 #define WPA_PSK_MIN     8
-/** 回复前缀长度（"CTRL-RSP"） */
-#define WPA_RSP_LEN     8
 /** 回复失败标记长度（"FAIL"） */
 #define WPA_FAIL_LEN    4
 /** 控制通道收发超时（秒） */
@@ -103,6 +112,80 @@ static int wpa_path(const char* ifname, char* out, int len)
 }
 
 /**
+ * @brief 生成客户端本地地址路径
+ * @param tag 通道标识（"cmd" / "ev" / "probe"），不可为空
+ * @param out 输出缓冲，不可为空
+ * @param len 输出缓冲长度
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+static int wpa_cli_path(const char* tag, char* out, int len)
+{
+    int n = 0; /* 写入长度 */
+
+    if (NULL == tag || NULL == out || len <= 0)
+        return -NETMGRERR_PARAM;
+
+    n = snprintf(out, (size_t)len, WPA_CLI_PATH, (int)getpid(), tag);
+    if (n < 0 || n >= len)
+        return -NETMGRERR_BUFF;
+    return 0;
+}
+
+/**
+ * @brief 绑定客户端本地地址
+ * @details AF_UNIX 数据报客户端必须先有地址，服务端才能把回包/事件送回来；
+ *          不绑定则 connect 成功、send 成功，但永远收不到回应（命令全部超时）
+ * @param fd  已创建的数据报 socket，>=0
+ * @param tag 通道标识，不可为空
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+static int wpa_bind_client(int fd, const char* tag)
+{
+    struct sockaddr_un self = {0}; /* 本端地址 */
+    char path[WPA_PATH_LEN] = {0}; /* 本端路径 */
+    int ret = 0;                   /* 路径生成结果 */
+
+    if (fd < 0)
+        return -NETMGRERR_PARAM;
+
+    ret = wpa_cli_path(tag, path, (int)sizeof(path));
+    if (ret < 0)
+        return ret;
+
+    self.sun_family = AF_UNIX;
+    (void)snprintf(self.sun_path, sizeof(self.sun_path), "%s", path);
+    (void)unlink(path); /* 清理上次异常退出留下的同名文件 */
+    if (0 != bind(fd, (struct sockaddr*)&self, (socklen_t)sizeof(self)))
+        return -NETMGRERR_SOCKET;
+    return 0;
+}
+
+/**
+ * @brief 解绑并删除客户端本地地址文件
+ * @param tag 通道标识，不可为空
+ */
+static void wpa_unbind_client(const char* tag)
+{
+    char path[WPA_PATH_LEN] = {0}; /* 本端路径 */
+
+    if (0 == wpa_cli_path(tag, path, (int)sizeof(path)))
+        (void)unlink(path);
+}
+
+/**
+ * @brief 取单调时钟毫秒数
+ * @details 用 CLOCK_MONOTONIC：系统时间被回拨也不影响等待超时计算
+ * @return 毫秒数
+ */
+static long long wpa_now_ms(void)
+{
+    struct timespec ts = {0}; /* 单调时钟读数 */
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + (long long)ts.tv_nsec / 1000000;
+}
+
+/**
  * @brief 在指定 socket 上收发一条命令，回复正文就地前移到缓冲头部（调用方须已持锁）
  * @param fd  目标 socket（命令通道或事件通道）
  * @param cmd 命令文本，不可为空
@@ -114,7 +197,6 @@ static int wpa_rsp(int fd, const char* cmd, char* buf, int len)
 {
     struct msghdr msg = {0}; /* 接收消息头，用 MSG_TRUNC 判断是否截断 */
     struct iovec iov = {0};  /* 接收区间 */
-    char* body = NULL;       /* 回复正文起点 */
     ssize_t n = 0;           /* 收发字节数 */
 
     if (NULL == cmd || NULL == buf || len <= 0)
@@ -139,18 +221,10 @@ static int wpa_rsp(int fd, const char* cmd, char* buf, int len)
 
     buf[n] = '\0';
 
-    /* 回复格式为 CTRL-RSP-<序号>-<长度>\n<正文>，正文取首个换行之后 */
-    if (0 != strncmp(buf, "CTRL-RSP", WPA_RSP_LEN))
+    /* 本层发送的是裸命令，wpa_supplicant 对该形态直接回正文（无前缀、无 OK 包裹）：
+       失败以 FAIL 起头，其余正文即命令输出；事件推送另走 CTRL-EVENT-*，不经过本函数 */
+    if (0 == strncmp(buf, "FAIL", WPA_FAIL_LEN))
         return -NETMGRERR_WPA;
-    body = strchr(buf, '\n');
-    if (NULL == body)
-        return -NETMGRERR_WPA;
-    ++body;
-
-    if (0 == strncmp(body, "FAIL", WPA_FAIL_LEN))
-        return -NETMGRERR_WPA;
-
-    memmove(buf, body, strlen(body) + 1);
     return 0;
 }
 
@@ -161,6 +235,62 @@ static int wpa_rsp(int fd, const char* cmd, char* buf, int len)
  * @param len 输出缓冲长度
  * @return 0 成功；负值为 NETMGRERR_* 错误码（正文超长返回 -NETMGRERR_BUFF）
  */
+/**
+ * @brief 重连控制通道：丢弃当前 socket 后按记录的接口名重新 connect
+ * @details 用于对端失效场景（wpa_supplicant 重启、控制口被其它实例替换）
+ * @return 0 成功；负值为 NETMGRERR_* 错误码（无可用记录时返回 -NETMGRERR_STATE）
+ */
+static int wpa_reconnect(void)
+{
+    char ifname[NETMGR_IF_LEN] = {0}; /* 重连使用的接口名 */
+
+    pthread_mutex_lock(&g_wpa.lock);
+    if (g_wpa.sock < 0 || '\0' == g_wpa.ifname[0])
+    {
+        pthread_mutex_unlock(&g_wpa.lock);
+        return -NETMGRERR_STATE;
+    }
+    (void)snprintf(ifname, sizeof(ifname), "%s", g_wpa.ifname);
+    close(g_wpa.sock);
+    g_wpa.sock = -1;
+    g_wpa.ifname[0] = '\0';
+    pthread_mutex_unlock(&g_wpa.lock);
+
+    return netmgr_wpa_open(ifname);
+}
+
+/**
+ * @brief 探测控制通道是否可用（PING/PONG）
+ * @details 用短超时收发：通道不可用时立即判失败，避免 start 阶段被长时间拖住
+ * @return 0 通道可用；负值为 NETMGRERR_* 错误码
+ */
+static int wpa_probe(void)
+{
+    char buf[64] = {0};        /* PONG 回复缓冲 */
+    struct timeval tv = {0};   /* 探测专用收发超时 */
+    int fd = -1;               /* 当前控制 socket */
+    int ret = 0;               /* 探测结果 */
+
+    pthread_mutex_lock(&g_wpa.lock);
+    fd = g_wpa.sock;
+    pthread_mutex_unlock(&g_wpa.lock);
+    if (fd < 0)
+        return -NETMGRERR_STATE;
+
+    tv.tv_usec = WPA_PROBE_TIMEOUT_MS * 1000;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
+
+    pthread_mutex_lock(&g_wpa.lock);
+    ret = wpa_rsp(fd, "PING", buf, (int)sizeof(buf));
+    pthread_mutex_unlock(&g_wpa.lock);
+
+    /* 恢复常规超时，后续命令按 WPA_SOCK_TIMEOUT_S 等待 */
+    tv.tv_sec = WPA_SOCK_TIMEOUT_S;
+    tv.tv_usec = 0;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
+    return ret;
+}
+
 static int wpa_cmd(const char* cmd, char* out, int len)
 {
     char buf[WPA_BUF_LEN] = {0}; /* 收发缓冲 */
@@ -168,6 +298,18 @@ static int wpa_cmd(const char* cmd, char* out, int len)
 
     pthread_mutex_lock(&g_wpa.lock);
     ret = wpa_rsp(g_wpa.sock, cmd, buf, (int)sizeof(buf));
+    pthread_mutex_unlock(&g_wpa.lock);
+
+    /* 对端失效（wpa_supplicant 重启、控制口文件被重建）时收发直接报错，
+       重连一次再重试，避免把一次重启当成持续故障 */
+    if (-NETMGRERR_WPA == ret && 0 == wpa_reconnect())
+    {
+        pthread_mutex_lock(&g_wpa.lock);
+        memset(buf, 0, sizeof(buf));
+        ret = wpa_rsp(g_wpa.sock, cmd, buf, (int)sizeof(buf));
+        pthread_mutex_unlock(&g_wpa.lock);
+    }
+
     if (0 == ret && NULL != out && len > 0)
     {
         /* 正文比调用方缓冲长时报错，避免截断后误用半个值 */
@@ -176,7 +318,6 @@ static int wpa_cmd(const char* cmd, char* out, int len)
         else
             (void)snprintf(out, (size_t)len, "%s", buf);
     }
-    pthread_mutex_unlock(&g_wpa.lock);
     return ret;
 }
 
@@ -494,6 +635,81 @@ int netmgr_wpa_conf_write(const char* path, const char* country)
 }
 
 /**
+ * @brief 探测指定接口的控制口是否在服务（用临时 socket，不触碰主通道）
+ * @details socket 文件存在不代表可用，按三种结果区分：
+ *          连不上说明无人监听（残留文件）；连上但没应答说明进程在但忙
+ * @param ifname 接口名，不可为空
+ * @return 1 可用（收到应答）；0 无可服务进程（无文件或 connect 失败）；
+ *         -1 连接成功但未应答（进程可能在初始化）
+ */
+static int wpa_socket_alive(const char* ifname)
+{
+    struct sockaddr_un addr = {0}; /* 控制口地址 */
+    struct timeval tv = {0};       /* 短超时，避免阻塞等待循环 */
+    char path[WPA_PATH_LEN] = {0}; /* 控制口路径 */
+    char buf[64] = {0};            /* PONG 回复 */
+    int fd = -1;                   /* 临时 socket */
+    int alive = 0;                 /* 探测结果 */
+
+    if (0 != wpa_path(ifname, path, (int)sizeof(path)))
+        return 0;
+    if (0 != access(path, F_OK))
+        return 0;
+
+    fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return 0;
+
+    /* 探测同样需要本地地址，否则收不到 PONG */
+    if (0 != wpa_bind_client(fd, "probe"))
+    {
+        close(fd);
+        return 0;
+    }
+
+    addr.sun_family = AF_UNIX;
+    (void)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    tv.tv_usec = WPA_PROBE_TIMEOUT_MS * 1000;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, (socklen_t)sizeof(tv));
+
+    if (0 != connect(fd, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
+    {
+        close(fd);
+        wpa_unbind_client("probe");
+        return 0; /* 连不上：无人监听，属残留文件 */
+    }
+
+    /* 连得上：再有应答才算可用；没应答视为“在但忙”，不可当残留删除 */
+    if (0 < send(fd, "PING", 4, 0) && 0 < recv(fd, buf, sizeof(buf) - 1, 0))
+        alive = 1;
+    else
+        alive = -1;
+    close(fd);
+    wpa_unbind_client("probe");
+    return alive;
+}
+
+/**
+ * @brief 清理残留的控制口文件（上次实例被强制结束时可能留下）
+ * @details 控制口仍被服务则保留；连不上说明是残留文件，删除后新实例才能 bind
+ * @param ifname 接口名，不可为空
+ */
+static void wpa_cleanup_socket(const char* ifname)
+{
+    char path[WPA_PATH_LEN] = {0}; /* 控制口路径 */
+
+    if (0 != wpa_path(ifname, path, (int)sizeof(path)))
+        return;
+    if (0 != access(path, F_OK))
+        return;
+    /* 只有“连不上”才判定为残留；连得上但忙（-1）时保留，避免误删在服务的接口 */
+    if (0 != wpa_socket_alive(ifname))
+        return;
+
+    (void)unlink(path);
+}
+
+/**
  * @brief 等待 wpa_supplicant 控制接口出现
  * @param ifname    接口名，不可为空
  * @param timeoutMs 等待超时（毫秒），0 表示使用默认超时
@@ -502,25 +718,25 @@ int netmgr_wpa_conf_write(const char* path, const char* country)
 int netmgr_wpa_wait(const char* ifname, int timeoutMs)
 {
     char path[WPA_PATH_LEN] = {0}; /* 控制接口路径 */
-    int times = WPA_OPEN_MAX;      /* 轮询次数 */
+    long long deadline = 0;        /* 等待截止时刻（单调时钟毫秒） */
     int ret = 0;                   /* 路径拼装结果 */
-    int i = 0;                     /* 轮询次数，从 0 开始 */
 
     if (NULL == ifname)
         return -NETMGRERR_PARAM;
-
-    if (timeoutMs > 0)
-        times = timeoutMs * 1000 / WPA_POLL_US;
-    if (times <= 0)
-        times = 1;
 
     ret = wpa_path(ifname, path, (int)sizeof(path));
     if (ret < 0)
         return ret;
 
-    for (i = 0; i < times; ++i)
+    if (timeoutMs <= 0)
+        timeoutMs = WPA_OPEN_MS;
+
+    /* 按挂钟计时：每轮探测本身要花时间，按轮次会显著压缩真实等待窗口 */
+    deadline = wpa_now_ms() + timeoutMs;
+    while (wpa_now_ms() < deadline)
     {
-        if (0 == access(path, F_OK))
+        /* 文件存在还不够：必须能连上并应答，避免把残留 socket 当成就绪 */
+        if (1 == wpa_socket_alive(ifname))
             return 0;
         usleep(WPA_POLL_US);
     }
@@ -562,6 +778,7 @@ int netmgr_wpa_open(const char* ifname)
 
         close(g_wpa.sock);
         g_wpa.sock = -1;
+        wpa_unbind_client("cmd");
         g_wpa.ifname[0] = '\0';
     }
 
@@ -572,11 +789,20 @@ int netmgr_wpa_open(const char* ifname)
         return -NETMGRERR_SOCKET;
     }
 
+    /* 绑定本端地址：不绑定则 wpa 无法把回包送回来，命令会全部超时 */
+    if (0 != wpa_bind_client(fd, "cmd"))
+    {
+        close(fd);
+        pthread_mutex_unlock(&g_wpa.lock);
+        return -NETMGRERR_SOCKET;
+    }
+
     addr.sun_family = AF_UNIX;
     (void)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
     if (0 != connect(fd, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
         close(fd);
+        wpa_unbind_client("cmd");
         pthread_mutex_unlock(&g_wpa.lock);
         return -NETMGRERR_WPA;
     }
@@ -625,6 +851,7 @@ void netmgr_wpa_close(void)
     {
         close(g_wpa.sock);
         g_wpa.sock = -1;
+        wpa_unbind_client("cmd");
     }
     g_wpa.ifname[0] = '\0';
     pthread_mutex_unlock(&g_wpa.lock);
@@ -642,9 +869,9 @@ int netmgr_wpa_connect(const char* ssid, const char* passwd, int timeoutMs)
     char id[WPA_ID_LEN] = {0};   /* wpa 分配的网络编号 */
     char cmd[WPA_CMD_LEN] = {0}; /* 拼接后的命令 */
     char out[WPA_BUF_LEN] = {0}; /* STATUS 回复 */
-    int times = WPA_CONN_MAX;    /* 关联等待次数 */
+    int times = WPA_CONN_MAX;    /* 等待预算（轮次 × 轮询间隔 = 毫秒） */
     int ret = 0;                 /* 子步骤返回值 */
-    int i = 0;                   /* 轮询次数，从 0 开始 */
+    long long deadline = 0;      /* 等待截止时刻（单调时钟毫秒） */
 
     if (NULL == ssid || '\0' == ssid[0])
         return -NETMGRERR_PARAM;
@@ -688,7 +915,10 @@ int netmgr_wpa_connect(const char* ssid, const char* passwd, int timeoutMs)
     if (times <= 0)
         times = 1;
 
-    for (i = 0; i < times; ++i)
+    /* 超时按挂钟计时：单次 STATUS 可能耗到收发超时（3 秒），
+       若按“轮次 × 间隔”计时，10 秒预算会被放大到数分钟 */
+    deadline = wpa_now_ms() + (long long)times * (WPA_POLL_US / 1000);
+    while (wpa_now_ms() < deadline)
     {
         out[0] = '\0';
         if (0 == wpa_cmd("STATUS", out, (int)sizeof(out)) &&
@@ -753,9 +983,9 @@ int netmgr_wpa_status(NETMGR_WIFI_INFO* info)
 int netmgr_wpa_scan(int timeoutMs)
 {
     char out[WPA_BUF_LEN] = {0}; /* STATUS 回复 */
-    int times = WPA_SCAN_MAX;    /* 扫描等待次数 */
+    int times = WPA_SCAN_MAX;    /* 等待预算（轮次 × 轮询间隔 = 毫秒） */
     int ret = 0;                 /* 子步骤返回值 */
-    int i = 0;                   /* 轮询次数，从 0 开始 */
+    long long deadline = 0;      /* 等待截止时刻（单调时钟毫秒） */
 
     ret = wpa_cmd("SCAN", NULL, 0);
     if (ret < 0)
@@ -766,8 +996,10 @@ int netmgr_wpa_scan(int timeoutMs)
     if (times <= 0)
         times = 1;
 
-    /* 扫描期间 wpa_state 为 SCANNING，离开该状态即认为本轮结束 */
-    for (i = 0; i < times; ++i)
+    /* 扫描期间 wpa_state 为 SCANNING，离开该状态即认为本轮结束。
+       超时同样按挂钟计时，避免单次 STATUS 收发超时把预算放大 */
+    deadline = wpa_now_ms() + (long long)times * (WPA_POLL_US / 1000);
+    while (wpa_now_ms() < deadline)
     {
         out[0] = '\0';
         if (0 == wpa_cmd("STATUS", out, (int)sizeof(out)) &&
@@ -936,11 +1168,20 @@ int netmgr_wpa_event_open(netmgr_wev_cb cb, void* user)
         return -NETMGRERR_SOCKET;
     }
 
+    /* 事件是服务端主动推送，客户端必须有地址才收得到 */
+    if (0 != wpa_bind_client(fd, "ev"))
+    {
+        close(fd);
+        pthread_mutex_unlock(&g_wpaEv.lock);
+        return -NETMGRERR_SOCKET;
+    }
+
     addr.sun_family = AF_UNIX;
     (void)snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
     if (0 != connect(fd, (struct sockaddr*)&addr, (socklen_t)sizeof(addr)))
     {
         close(fd);
+        wpa_unbind_client("ev");
         pthread_mutex_unlock(&g_wpaEv.lock);
         return -NETMGRERR_WPA;
     }
@@ -1006,8 +1247,114 @@ int netmgr_wpa_event_close(void)
     (void)wpa_rsp(g_wpaEv.sock, "DETACH", buf, (int)sizeof(buf));
     close(g_wpaEv.sock);
     g_wpaEv.sock = -1;
+    wpa_unbind_client("ev");
     g_wpaEv.cb = NULL;
     g_wpaEv.user = NULL;
     pthread_mutex_unlock(&g_wpaEv.lock);
     return 0;
+}
+
+/**
+ * @brief 拉起 wpa_supplicant 并打开控制通道
+ * @param ifname    接口名，不可为空
+ * @param confPath  配置文件输出路径，不可为空
+ * @param country   国家码，可为空
+ * @param timeoutMs 等待控制接口的超时（毫秒），0 表示默认
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_start(const char* ifname, const char* confPath, const char* country, int timeoutMs)
+{
+    int ret = 0; /* 子步骤返回值 */
+    int i = 0;   /* 通道探测轮次，从 0 开始 */
+
+    if (NULL == ifname || '\0' == ifname[0] || NULL == confPath || '\0' == confPath[0])
+        return -NETMGRERR_PARAM;
+
+    /* 已建立通道时先完整停止，保证后续步骤按新参数重建 */
+    if (0 != netmgr_wpa_is_open())
+        (void)netmgr_wpa_stop();
+
+    /* 第 1 步：独占启动，结束残留实例，避免沿用未知配置 */
+    ret = netmgr_proc_kill(WPA_PROC_NAME);
+    if (ret < 0)
+        return ret;
+
+    /* 第 1.5 步：清理残留控制口，避免新实例 bind 时 EADDRINUSE 直接退出 */
+    wpa_cleanup_socket(ifname);
+
+    /* 第 2 步：写最小配置（控制接口目录 + 可选国家码） */
+    ret = netmgr_wpa_conf_write(confPath, country);
+    if (ret < 0)
+        return ret;
+
+    /* 第 3 步：后台拉起。用 spawn 而非 system：system 会等命令结束，而
+       wpa_supplicant 的 -B 守护化时序不保证快速退出，调用线程会被拖住；
+       spawn 由 common 层双 fork 脱离会话，并重定向其输出，立即返回 */
+    {
+        char* argv[6] = {0}; /* wpa_supplicant 参数表，末尾 NULL 结尾 */
+
+        argv[0] = (char*)"wpa_supplicant";
+        argv[1] = (char*)"-i";
+        argv[2] = (char*)ifname;
+        argv[3] = (char*)"-c";
+        argv[4] = (char*)confPath;
+        ret = netmgr_proc_spawn("wpa_supplicant", argv);
+    }
+    if (ret < 0)
+        return -NETMGRERR_PROC;
+
+    /* 第 4 步：等控制接口出现并建立通道；失败时回收进程，不留孤儿 */
+    ret = netmgr_wpa_wait(ifname, timeoutMs);
+    if (ret < 0)
+    {
+        (void)netmgr_proc_kill(WPA_PROC_NAME);
+        return ret;
+    }
+
+    ret = netmgr_wpa_open(ifname);
+    if (ret < 0)
+    {
+        /* 控制口文件存在但连不上（无人监听/被替换）：与“连上但不应答”区分上报 */
+        (void)netmgr_proc_kill(WPA_PROC_NAME);
+        return -NETMGRERR_SOCKET;
+    }
+
+    /* 第 5 步：确认控制通道真的可用（PING/PONG）。socket 文件存在不代表能收发：
+       进程未就绪、接口未被接管、控制口被其它实例替换时，文件仍在但命令全失败；
+       提前判失败并回收进程，避免上层拿到“假成功”后逐个命令报 -NETMGRERR_WPA */
+    for (i = 0; i < WPA_PROBE_MAX; ++i)
+    {
+        if (0 == wpa_probe())
+            return 0;
+        usleep(WPA_POLL_US);
+    }
+
+    (void)netmgr_wpa_close();
+    (void)netmgr_proc_kill(WPA_PROC_NAME);
+    return -NETMGRERR_TIMEOUT;
+}
+
+/**
+ * @brief 断开连接、关闭控制通道并结束 wpa_supplicant 进程
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_stop(void)
+{
+    int err = 0; /* 首个错误码，0 表示尚无失败 */
+    int ret = 0; /* 子步骤返回值 */
+
+    /* 第 1 步：先经通道断开并清空网络配置，避免进程被结束前 wpa 自动重连 */
+    if (0 != netmgr_wpa_is_open())
+    {
+        ret = netmgr_wpa_disconnect();
+        if (ret < 0)
+            err = ret;
+        netmgr_wpa_close();
+    }
+
+    /* 第 2 步：结束进程；未运行时同样视为成功 */
+    ret = netmgr_proc_kill(WPA_PROC_NAME);
+    if (ret < 0 && 0 == err)
+        err = ret;
+    return err;
 }

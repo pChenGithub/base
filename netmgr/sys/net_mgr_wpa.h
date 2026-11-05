@@ -2,11 +2,13 @@
  * @file net_mgr_wpa.h
  * @brief netmgr 系统适配层：wpa_supplicant 控制接口（sys 层，可独立使用）
  * @details 直连 wpa_supplicant 的 unix 控制接口（CTRL-REQ/CTRL-RSP 最小协议），
- *          提供「连接 / 断开 / 状态查询 / 扫描 / 扫描结果」五类能力与 wpa 事件监听，
+ *          提供「启动 / 停止 / 连接 / 断开 / 状态查询 / 扫描 / 扫描结果」能力与事件监听，
  *          只依赖 common 与系统 socket，可脱离 netmgr 上层单独使用。
- *          职责边界（硬性）：wpa_supplicant 的启动/结束与进程生命周期归调用方编排，
- *          本层只提供 conf_write / wait / open / close 四个挂接点，不拉起、不杀进程，
- *          也不处理 DHCP 与路由。
+ *          职责边界（硬性）：wpa_supplicant 自身进程的拉起与结束由本层承担
+ *          （`netmgr_wpa_start` / `netmgr_wpa_stop`），进程控制能力来自 common 层的
+ *          `net_mgr_proc`，sys 层模块之间仍保持零横向依赖；
+ *          本层不处理 DHCP 与路由，也不编排 hostapd / udhcpd 等其它进程
+ *          （跨进程互斥，如 STA/AP 切换，由调用方决定）。
  *          网络配置由调用方每次 connect 下发、不持久化；disconnect 会清空 wpa 内网络配置，
  *          避免残留网络被自动重连。
  *
@@ -14,8 +16,10 @@
  * 1) 单实例：进程内维护一份控制通道，同一时刻只服务一个接口；
  * 2) 线程：命令接口全部同步返回；事件通道（netmgr_wpa_event_open）另起 1 个接收线程，
  *    回调在该线程上下文执行，回调内不可长时间阻塞；
- * 3) 权限：连接控制接口需与 wpa_supplicant 同用户或具备访问权限；
- * 4) 外部依赖：wpa_supplicant 已在运行并创建 /var/run/wpa_supplicant/<ifname>。
+ * 3) 权限：拉起/结束 wpa_supplicant 需 root 或对应用户权限，
+ *    连接控制接口需与 wpa_supplicant 同用户或具备访问权限；
+ * 4) 外部依赖：wpa_supplicant 可执行文件；由 `netmgr_wpa_start` 拉起并创建
+ *    /var/run/wpa_supplicant/<ifname>，不依赖外部先行启动。
  */
 #ifndef __NET_MGR_WPA_H__
 #define __NET_MGR_WPA_H__
@@ -94,6 +98,28 @@ typedef struct {
  */
 typedef int (*netmgr_wev_cb)(const NETMGR_WEV* ev, void* user);
 
+/* ===== 生命周期 ===== */
+
+/**
+ * @brief 拉起 wpa_supplicant 并打开控制通道
+ * @details 步骤：结束残留实例（独占启动）→ 写最小配置 → 后台拉起 →
+ *          等控制接口出现 → 打开通道；通道已打开时先停止再重建。
+ *          只负责 wpa_supplicant 进程，不碰 hostapd / udhcpd 与地址配置
+ * @param ifname    接口名，不可为空
+ * @param confPath  配置文件输出路径，不可为空
+ * @param country   国家码（如 "CN"），NULL 或空串表示不写 country 行
+ * @param timeoutMs 等待控制接口的超时（毫秒），0 表示使用默认超时
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_start(const char* ifname, const char* confPath, const char* country, int timeoutMs);
+
+/**
+ * @brief 断开连接、关闭控制通道并结束 wpa_supplicant 进程
+ * @details 未运行时同样返回 0；断开失败不阻断后续清理，错误码在末尾上抛
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_wpa_stop(void);
+
 /* ===== 控制通道 ===== */
 
 /**
@@ -136,7 +162,7 @@ void netmgr_wpa_close(void);
  * @brief 连接指定热点（内部完成网络配置、使能、选中与关联完成等待）
  * @param ssid   热点名称，不可为空
  * @param passwd 密码，空串表示开放网络
- * @param timeoutMs 关联完成等待超时（毫秒），0 表示使用默认超时
+ * @param timeoutMs 关联完成等待超时（毫秒，按挂钟计），0 表示使用默认超时
  * @return 0 已关联；负值为 NETMGRERR_* 错误码（通道未打开返回 -NETMGRERR_STATE）
  */
 int netmgr_wpa_connect(const char* ssid, const char* passwd, int timeoutMs);
@@ -165,7 +191,7 @@ int netmgr_wpa_status(NETMGR_WIFI_INFO* info);
 
 /**
  * @brief 触发一次扫描，并等待扫描结束
- * @param timeoutMs 扫描结束等待超时（毫秒），0 表示使用默认超时
+ * @param timeoutMs 扫描结束等待超时（毫秒，按挂钟计），0 表示使用默认超时
  * @return 0 扫描完成；负值为 NETMGRERR_* 错误码（超时返回 -NETMGRERR_TIMEOUT，
  *         此时扫描仍在后台进行、结果仍可读取）
  */
