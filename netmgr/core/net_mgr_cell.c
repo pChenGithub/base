@@ -83,7 +83,7 @@ static int cell_open(NETMGR_CTX* ctx, const void* conf)
         free(priv);
         return ret;
     }
-    ret = netmgr_dhcp_start(priv->conf.ifname, 0, core_dhcp_cb, priv);
+    ret = netmgr_dhcp_start(priv->conf.ifname, core_dhcp_cb, priv);
     if (ret < 0)
     {
         free(priv);
@@ -131,29 +131,13 @@ static int cell_close(NETMGR_CTX* ctx)
 static int cell_refresh(NETMGR_CTX* ctx)
 {
     NETMGR_CELL_PRIV* priv = NULL; /* 私有数据 */
-    int ret = 0;                   /* 子步骤返回值 */
 
     if (NULL == ctx || NULL == ctx->priv)
-    {
         return -NETMGRERR_PARAM;
-    }
     priv = (NETMGR_CELL_PRIV*)ctx->priv;
 
-    ret = core_link_ready(ctx);
-    if (ret < 0)
-        return ret;
-
-    /* 未就绪时带上 DHCP 侧原因，供事件与状态快照上报 */
-    ctx->err = (NETMGR_ST_DOWN == ctx->state &&
-                NETMGR_DHCP_FAIL == priv->dhcp.dhcpState) ?
-               (int)priv->dhcp.dhcpErr : 0;
-
-    /* 模组重新注网后取址线程可能已退出，按需重新拉起 */
-    if (NETMGR_ST_DOWN == ctx->state && !netmgr_dhcp_busy(ctx->ifname))
-    {
-        ret = netmgr_dhcp_start(ctx->ifname, 0, core_dhcp_cb, priv);
-        if (ret < 0)
-            return ret;
-    }
-    return 0;
+    /* 4G 恒为 DHCP 取址：接口消失、就绪判定与 DOWN 归因共用 eth 的实现 */
+    return core_link_ready_dhcp(ctx, &priv->dhcp);
 }
+
+

@@ -6,9 +6,9 @@
  *          以太网 / WiFi / 4G 三条链路的实现与就绪判定属本层内部（不对外暴露）。
  *          链路类型、状态、事件、快照与配置均由本层产出或拥有，故类型定义在本文件，
  *          api 层通过包含本文件向上转出，形成 api → core 的单向依赖。
- *          本层不创建线程：
- *          1) netlink 事件由 sys 层事件回调直接驱动一轮仲裁；
- *          2) 其它不产生事件的状态变化由业务周期调用 netmgr_core_poll 驱动。
+ *          线程模型：本层起 1 个定时线程周期驱动仲裁（间隔 NETMGR_CONF.tickMs），
+ *          与 netlink 事件、DHCP 会话回调、显式配置接口共同构成四类驱动源；
+ *          业务只消费事件与查询快照，不需要（也无接口）手动驱动仲裁。
  */
 #ifndef __NET_MGR_CORE_H__
 #define __NET_MGR_CORE_H__
@@ -66,7 +66,10 @@ typedef enum {
     /* WiFi */
     NETMGR_EV_WIFI_CONNECTED,    /**< WiFi STA 已关联热点（wifi 字段有效） */
     NETMGR_EV_WIFI_DISCONNECTED, /**< WiFi STA 关联断开 */
-    NETMGR_EV_WIFI_SCAN_DONE     /**< WiFi 扫描完成（结果经 netmgr_core_wifi_scan_result 获取） */
+    NETMGR_EV_WIFI_SCAN_DONE,    /**< WiFi 扫描完成（结果经 netmgr_core_wifi_scan_result 获取） */
+
+    /* 追加在末尾：新增事件不得改变既有枚举取值 */
+    NETMGR_EV_DHCP_LOST          /**< 已取得的租约丢失（续租失败退回重新获取），载荷同 DHCP_FAIL */
 } NETMGR_EV;
 
 /** WiFi 工作模式 */
@@ -91,7 +94,9 @@ typedef struct {
     char ip[NETMGR_IP_LEN];     /**< 当前 IP，未取得时为空串 */
     char mask[NETMGR_IP_LEN];   /**< 当前掩码，未取得时为空串 */
     char gate[NETMGR_IP_LEN];   /**< 当前网关，未取得时为空串 */
-    int err;                    /**< 最近一次异常的错误码（0 表示无异常），负值为 NETMGRERR_* */
+    int err;                    /**< 最近一次异常的错误码（0 表示无异常），负值为 NETMGRERR_*；
+                                     DHCP 链路 DOWN 时区分原因：曾取到租约后中断为 -NETMGRERR_DHCP，
+                                     取址失败为具体错误码 */
 } NETMGR_LINK;
 
 /** 精简链路标识：事件中用于定位链路，不含地址快照 */
@@ -142,7 +147,7 @@ typedef struct {
  * 单次事件数据：外层只有判别符，其余按 ev 取 u 的对应成员
  * @note 载荷映射（禁止跨类型读取 u）：
  *       UP / DOWN / ENABLED / DISABLED → u.link（完整链路快照）
- *       DHCP_RUNNING / DHCP_SUCC / DHCP_FAIL → u.dhcp
+ *       DHCP_RUNNING / DHCP_SUCC / DHCP_FAIL / DHCP_LOST → u.dhcp
  *       WIFI_CONNECTED / WIFI_DISCONNECTED   → u.wifi
  *       INFO_CHANGE → u.info
  *       SWITCH      → u.sw
@@ -164,8 +169,8 @@ typedef struct {
 
 /**
  * @brief 事件回调：所有事件统一经此返回
- * @details 事件类型由 NETMGR_EVENT.ev 给出，载荷按类型取自 link / prevLink / wifi / apNum；
- *          回调可能在 sys 事件线程、DHCP 取址线程或业务调用 netmgr_core_poll 的线程上执行，
+ * @details 事件类型由 NETMGR_EVENT.ev 给出，载荷按类型取自 u 的对应成员；
+ *          回调可能在 sys 事件线程、DHCP 取址线程或 core 定时线程上执行，
  *          不可长时间阻塞；结构体指针仅在回调期间有效，不可保存
  * @param ev   事件数据，不可为空
  * @param user 注册时传入的用户指针，可为空
@@ -221,6 +226,9 @@ typedef struct {
     NETMGR_ETH_CONF eth;    /**< 以太网配置 */
     NETMGR_WIFI_CONF wifi;  /**< WiFi 配置 */
     NETMGR_CELL_CONF cell;  /**< 4G 配置 */
+    int tickMs;             /**< 仲裁定时驱动间隔（毫秒）；<=0 时取默认 500。
+                                 定时线程按该间隔跑一轮仲裁，用于覆盖无事件场景
+                                 （hostapd 进程意外退出、模组重注网等），建议 500~1000 */
 } NETMGR_CONF;
 
 /* ===== 生命周期 ===== */
@@ -228,8 +236,8 @@ typedef struct {
 /**
  * @brief 启动仲裁核心，按配置拉起全部启用的链路
  * @details 全部事件统一经 cb 返回：链路状态、网络信息变化、默认路由变化、
- *          DHCP 过程与 WiFi 状态；回调在事件线程或业务调用线程
- *          （netmgr_core_poll）上下文执行，不可长时间阻塞
+ *          DHCP 过程与 WiFi 状态；回调在 netlink 事件线程、DHCP 取址线程或
+ *          本层定时线程上下文执行，不可长时间阻塞
  * @param conf 总配置，不可为空；配置内容在函数内复制，调用后外部可释放
  * @param cb   事件回调，可为空（不需要通知时）
  * @param user 回调透传的用户指针，可为空
@@ -244,15 +252,6 @@ int netmgr_core_start(const NETMGR_CONF* conf, netmgr_event_cb cb, void* user);
 int netmgr_core_stop(void);
 
 /* ===== 驱动 ===== */
-
-/**
- * @brief 驱动一轮仲裁刷新
- * @details 本层不创建线程：netlink 事件由 sys 层事件回调驱动，
- *          其余不产生事件的状态变化（AP 进程退出、DHCP 异步失败、
- *          静态地址首次就绪、优先级变更）需由业务周期性调用本接口
- * @return 0 成功；负值为本轮首个失败步骤的错误码；未启动返回 -NETMGRERR_STATE
- */
-int netmgr_core_poll(void);
 
 /* ===== 查询 ===== */
 

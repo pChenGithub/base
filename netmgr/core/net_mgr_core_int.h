@@ -13,7 +13,14 @@ extern "C" {
 #endif
 
 #include "net_mgr_core.h"
+
 #include "net_mgr_dhcp.h"
+
+/** 默认路由 metric 基址：实际 metric = 基址 + 链路优先级（prio 小者路由更优） */
+#define NETMGR_METRIC_BASE  0
+
+/** 仲裁定时驱动默认间隔（毫秒）：配置未指定（tickMs<=0）时使用 */
+#define NETMGR_TICK_MS  500
 
 /** 单一链路的运行时上下文 */
 typedef struct {
@@ -29,7 +36,8 @@ typedef struct {
     char ip[NETMGR_IP_LEN];         /**< 当前 IP */
     char mask[NETMGR_IP_LEN];       /**< 当前掩码 */
     char gate[NETMGR_IP_LEN];       /**< 当前网关 */
-    int err;                        /**< 最近一次异常的错误码（0 表示无异常），负值为 NETMGRERR_* */
+    int err;                        /**< 最近一次异常的错误码（0 表示无异常），负值为 NETMGRERR_*；
+                                         DHCP 链路 DOWN 时：曾取到租约后中断为 -NETMGRERR_DHCP，取址失败为具体错误码 */
     char dns[NETMGR_IP_LEN];        /**< DNS 服务器 */
     NETMGR_WIFI_INFO wifi;          /**< WiFi 连接信息，仅 WiFi 链路刷新时填写，其余链路恒为空 */
     void* priv;                     /**< 各链路私有数据，由各实现自行分配释放 */
@@ -53,7 +61,9 @@ typedef struct {
     int (*close)(NETMGR_CTX* ctx);
 
     /**
-     * @brief 刷新链路实时状态（IP、掩码、网关、就绪标志）
+     * @brief 刷新链路实时状态：只把内核与进程的实际状态投影进上下文
+     * @details 只写 ctx 的 ip / mask / gate / state / err，
+     *          不得拉起或停止取址进程、不得改配置；取址会话的可靠性由 sys 层保证
      * @param ctx 链路上下文
      * @return 0 成功；负值为 NETMGRERR_* 或底层错误码
      */
@@ -73,6 +83,7 @@ extern const NETMGR_OPS core_cell_ops;
  */
 typedef struct {
     NETMGR_TYPE type;                     /**< 所属链路类型，回调上报事件用 */
+    int reported;                         /**< 1=已上报过至少一次取址状态，用于事件去重 */
     volatile NETMGR_DHCP_STATE dhcpState; /**< 最近一次 DHCP 取址状态 */
     volatile int dhcpErr;                 /**< 最近一次 DHCP 取址错误码，0 表示无异常 */
 } NETMGR_DHCP_BASE;
@@ -96,29 +107,31 @@ int core_link_ready(NETMGR_CTX* ctx);
  */
 int core_link_ready_static(NETMGR_CTX* ctx, const char* gate);
 
-/* ===== 事件上报（链路实现调用，由仲裁层统一分发） ===== */
-
 /**
- * @brief 上报一次 DHCP 取址状态变化
- * @details 由各链路的 DHCP 回调调用；仲裁层负责转成 NETMGR_EV_DHCP_* 事件并分发给业务
- * @param type  链路类型
- * @param state DHCP 取址状态（NETMGR_DHCP_STATE）
- * @param err   状态为 FAIL 时的错误码，其余为 0
+ * @brief DHCP 取址链路的就绪判定：接口消失判定 + 通用就绪判定 + DOWN 原因归因
+ * @details eth / cell 的刷新逻辑完全一致，抽到本层避免两处维护同一套归因规则：
+ *          1) 接口不存在 → DOWN + -NETMGRERR_NOTFOUND，跳过后续查询；
+ *          2) 通用判定（连通 + 地址 + 路由网关）；
+ *          3) DOWN 原因：会话 FAIL 取具体错误码；曾取到租约后中断置 -NETMGRERR_DHCP
+ * @param ctx  链路上下文，不可为空
+ * @param base 链路私有数据的公共头（含 DHCP 会话状态），不可为空
+ * @return 0 成功（未就绪时状态置为 DOWN）；负值为 NETMGRERR_* 错误码
  */
-void core_report_dhcp(NETMGR_TYPE type, int state, int err);
+int core_link_ready_dhcp(NETMGR_CTX* ctx, NETMGR_DHCP_BASE* base);
+
+/* ===== DHCP 状态上报（链路实现注册的回调，由仲裁层转成业务事件） ===== */
 
 /**
  * @brief 三类链路共用的 DHCP 取址状态回调，在 DHCP 取址线程上下文执行
  * @details user 须指向以 NETMGR_DHCP_BASE 为首成员的链路私有数据；
- *          只记录状态与错误码并上报仲裁层，地址仍由刷新流程从接口读取，
- *          恒返回 NETMGR_DHCP_RET_OK，重拉由刷新流程负责
+ *          只记录状态与错误码并上报仲裁层，地址仍由刷新流程从接口读取；
+ *          无返回值——重试与续租均归 sys 层取址会话负责
  * @param state  取址状态
  * @param ifname 接口名
  * @param err    状态为 FAIL 时的错误码
  * @param user   注册时传入的链路私有数据（首成员须为 NETMGR_DHCP_BASE）
- * @return 恒返回 NETMGR_DHCP_RET_OK
  */
-NETMGR_DHCP_RET core_dhcp_cb(NETMGR_DHCP_STATE state, const char* ifname, int err, void* user);
+void core_dhcp_cb(NETMGR_DHCP_STATE state, const char* ifname, int err, void* user);
 
 /* WiFi 连接信息由链路刷新写入上下文，仲裁层按轮次比对后生成连接/断开事件 */
 

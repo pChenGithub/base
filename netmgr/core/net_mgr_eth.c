@@ -75,7 +75,7 @@ static int eth_open(NETMGR_CTX* ctx, const void* conf)
     /* 第 3 步：按取址方式配置，DHCP 为异步，静态配置在此同步完成 */
     if (priv->conf.use_dhcp)
     {
-        ret = netmgr_dhcp_start(priv->conf.ifname, 0, core_dhcp_cb, priv);
+        ret = netmgr_dhcp_start(priv->conf.ifname, core_dhcp_cb, priv);
         if (ret < 0)
         {
             free(priv);
@@ -148,33 +148,17 @@ static int eth_refresh(NETMGR_CTX* ctx)
     int ret = 0;                  /* 子步骤返回值 */
 
     if (NULL == ctx || NULL == ctx->priv)
-    {
         return -NETMGRERR_PARAM;
-    }
     priv = (NETMGR_ETH_PRIV*)ctx->priv;
 
-    /* DHCP 取址：连通性、地址、网关完全交给通用判定 */
+    /* DHCP 取址：连通性、地址、网关与 DOWN 归因全部交给通用判定 */
     if (priv->conf.use_dhcp)
-    {
-        ret = core_link_ready(ctx);
-        if (ret < 0)
-            return ret;
-        /* 未就绪时带上 DHCP 侧原因，供事件与状态快照上报 */
-        ctx->err = (NETMGR_ST_DOWN == ctx->state &&
-                    NETMGR_DHCP_FAIL == priv->dhcp.dhcpState) ?
-                   (int)priv->dhcp.dhcpErr : 0;
-        /* 取址线程已结束且仍无地址时重新拉起，实现链路自愈 */
-        if (NETMGR_ST_DOWN == ctx->state && !netmgr_dhcp_busy(ctx->ifname))
-        {
-            ret = netmgr_dhcp_start(ctx->ifname, 0, core_dhcp_cb, priv);
-            if (ret < 0)
-                return ret;
-        }
-        return 0;
-    }
+        return core_link_ready_dhcp(ctx, &priv->dhcp);
 
     /* 静态地址：只判定连通性与地址是否在位，网关取配置值 */
     ret = core_link_ready_static(ctx, priv->conf.gate);
     ctx->err = 0;
     return ret;
 }
+
+
