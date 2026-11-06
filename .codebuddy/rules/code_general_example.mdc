@@ -216,6 +216,23 @@ static int handle_refresh_event(const EVENT* ev)
 }
 ```
 
+```text
+// 正确：能力只在其所属模块实现，调用方按依赖方向引用，不在本模块内就地实现
+/* b_conf.c */  int b_write_config(const char* path);   // 配置读写属 B 模块
+/* a_link.c */  b_write_config(path);                    // A 只调用
+
+// 正确：删除前确认全仓无引用（含示例与文档），确认后直接删，不留“备查”副本
+//   判定：有调用方或对外契约 → 保留；否则删除，历史版本由版本控制承担
+```
+
+```text
+// 正确：模块 = 一对 .c/.h；对外能力只有自身职责，跨层动作由调用方注入
+/* a_engine.c */  int a_run(A_CTX* ctx, const A_APPLY* apply);   // 纯逻辑，可单测
+/* b_impl.c   */  int b_route_add(...);                          // 真正落地系统动作
+/* c_main.c   */  static const A_APPLY kApply = { b_route_add, b_route_del };
+                  a_run(&ctx, &kApply);                          // 上层注入，无横向依赖
+```
+
 ## 反向示例
 
 - 正向示例反例见 `code_general_badcase.mdc`「反向示例」

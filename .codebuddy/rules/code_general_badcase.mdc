@@ -214,6 +214,42 @@ static int handle_refresh_event(const EVENT* ev)
 }
 ```
 
+```text
+// 错误：模块 A 里就地实现了模块 B 的能力（与 A 的职责无关）
+/* a_link.c */
+static int a_write_b_config(const char* path)   // 配置读写属 B 模块
+{
+    FILE* fp = fopen(path, "w");
+    ...
+}
+
+// 错误：死代码滞留——不可达分支、无引用字段、注释掉的旧实现
+static int a_unused_helper(void) { return 0; }  // 全仓无调用
+#if 0
+static void a_old_flow(void) { ... }            // 旧实现留着“备查”
+#endif
+struct a_ctx { int legacy; };                   // legacy 字段无人读写
+
+// 合规改写：能力归位到 B；无引用即删（需要历史用版本控制查，不留在源码里）
+/* b_conf.c */  int b_write_config(const char* path) { ... }
+```
+
+```text
+// 错误：同级模块横向依赖（a_link 直接调 b_conf 的符号）
+/* a_link.c */
+#include "b_conf.h"                       // 与 A 同级的 B 模块
+int a_open(void) { return b_write_config("/tmp/a.conf"); }
+
+// 错误：模块功能残缺——open 只做一半，close 要调用方补做内部步骤
+int a_open(void) { a_fd = open_device(); return 0; }   // 未连通、未复位状态
+// 调用方被迫补：a_internal_reset(); a_link_up();
+
+// 合规改写：能力由上层注入（依赖倒置），模块自身 open/close 成对且自洽
+typedef struct { int (*write_conf)(const char* path); } A_APPLY;   /* 上层注入 */
+int a_open(const A_APPLY* apply) { ...; apply->write_conf("/tmp/a.conf"); ...; }
+int a_close(void) { ...; /* 内部状态自己复位 */ return 0; }
+```
+
 ## 正向示例
 
 - 反向示例正例见 `code_general_example.mdc`「正向示例」
