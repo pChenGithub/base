@@ -24,10 +24,6 @@ int netmgr_stop(void)
     return netmgr_core_stop();
 }
 
-int netmgr_poll(void)
-{
-    return netmgr_core_poll();
-}
 
 int netmgr_prio_set(NETMGR_TYPE type, unsigned char prio)
 {

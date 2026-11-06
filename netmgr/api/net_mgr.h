@@ -26,8 +26,8 @@ extern "C" {
 /**
  * @brief 启动网络管理服务，按配置拉起全部启用的链路
  * @details 全部事件统一经 cb 返回：链路状态、网络信息变化、默认路由变化、
- *          DHCP 过程与 WiFi 状态；
- *          启动后需由业务周期调用 netmgr_poll 驱动刷新（建议 200~1000ms）
+ *          DHCP 过程与 WiFi 状态；仲裁由库内定时线程（配置项 tickMs，默认 500ms）
+ *          与 netlink 事件共同驱动，业务无需周期调用任何刷新接口
  * @param conf 总配置，不可为空；配置内容在函数内复制，调用后外部可释放
  * @param cb   事件回调，可为空（不需要通知时）
  * @param user 回调透传的用户指针，可为空
@@ -40,15 +40,6 @@ int netmgr_start(const NETMGR_CONF* conf, netmgr_event_cb cb, void* user);
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netmgr_stop(void);
-
-/**
- * @brief 驱动一轮链路状态刷新与仲裁
- * @details 本模块不创建管理线程：netlink 事件变化由事件回调即时驱动，
- *          而 AP 进程退出、DHCP 异步失败、静态地址首次就绪、优先级变更等
- *          不产生 netlink 事件的变化，需由业务周期调用本接口补齐
- * @return 0 成功；负值为本轮首个失败步骤的错误码；未启动返回 -NETMGRERR_STATE
- */
-int netmgr_poll(void);
 
 /* ===== 查询 ===== */
 
