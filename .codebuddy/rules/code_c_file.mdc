@@ -1,5 +1,5 @@
 ---
-description: C 编码规范补充片：文件组织与目录组织（自包含模块、include 顺序、目录分层），条文见 code_c.mdc
+description: C 编码规范补充片：文件组织与目录组织（自包含模块、include 顺序、类型归属父子紧密联系、目录分层），条文见 code_c.mdc
 alwaysApply: true
 ---
 
@@ -45,6 +45,13 @@ alwaysApply: true
 - 函数区内按调用层次（底层 → 上层）或模块功能分组，组间空行分隔；组内可用 `/* ===== 分组名 ===== */` 注释分隔
 - 例外：`static inline` 函数定义可紧随其依赖的类型之后，但仍须集中在同一函数区，不散落
 - 实现文件（`.c`）不受此约束：`static` 前置声明可放在使用点之前
+- **类型归属（父子紧密联系原则）**：数据类型与其**产出 / 拥有的模块**同处一个头文件，使用者 include 该模块头获得；**不以"被多少模块使用"作为上提公共头的理由**
+  - 模块级类型 → 定义在产出模块的 `.h`，上层 include 取得（依赖方向自上而下）
+  - 项目级公共结构（全部业务与模块共享、无单一产出模块）→ 集中定义在项目数据定义头（位置以项目文档为准）
+  - 模块间协作契约（上下文 / 操作表）→ 契约头（`xxx_ctx.h`）
+  - 跨层共用的常量（缓冲尺寸等，无产出模块）→ 公共常量头（如 `xxx_limits.h`），不放业务类型
+- **禁止错层**：公共头与契约头不得承载单模块产出类型，否则使用者为取一个类型被迫包含无关头，形成隐式耦合
+- 类型搬家后核对使用方：原本已包含该模块头则无需改动，否则补 include 并编译验证
 
 ```c
 /* 正确：头文件结构（函数集中在末尾函数区） */
@@ -74,6 +81,20 @@ int ModuleStop(void);
 int ModuleStart(void);      /* 插在宏与类型之间 */
 typedef struct { int count; } ModuleCtx;
 int ModuleGetCount(void);   /* 与类型声明交错 */
+```
+
+```c
+/* 正确：单模块对外类型与其函数声明同处一个头，使用者一次 include 即可 */
+// module_route.h
+#include "module_types.h"
+typedef struct { char ifname[IF_LEN]; int metric; } ModuleRoute;
+int module_route_get(ModuleRoute* out);
+```
+
+```c
+/* 错误：类型脱离了它的产出模块——放进契约头，或因"多模块共用"上提到公共头 */
+// module_ctx.h（契约头只放上下文 / 操作表）
+typedef struct { char ifname[IF_LEN]; int metric; } ModuleRoute; /* 产出者是 route 模块 */
 ```
 
 ## 目录组织（服务 / 模块分层）

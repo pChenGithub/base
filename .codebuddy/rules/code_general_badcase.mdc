@@ -179,6 +179,41 @@ free(text);
 return 0;
 ```
 
+```text
+// 错误：裸数值 + 无主语 + 多事件拼一行，读不出发生了什么事
+printf("err %d %d %d\n", ret, channel, periodMs);
+// 合规改写：printf("[module] 采集失败: channel=%d period=%dms ret=%d\r\n", channel, periodMs, ret);
+
+// 错误：状态未变化也逐轮打印，刷屏并淹没真正的状态变化
+printf("state %d\n", state);
+// 合规改写：if (state != lastState) { printf("[module] 状态变化: state=%s\r\n", stateName(state)); }
+```
+
+```text
+// 错误：两个函数体逐行相同，只是名字不同——同一职责被复制两份
+static void handle_link_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return;
+    (void)drive_once(EVENT_SRC);
+}
+
+static void handle_addr_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return;
+    (void)drive_once(EVENT_SRC);
+}
+// 合规改写：合并为一个函数，调用方按需传入来源/类型；确需分开时必须有实质差异
+static int handle_refresh_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return 0;
+    (void)drive_once(EVENT_SRC);
+    return 1;
+}
+```
+
 ## 正向示例
 
 - 反向示例正例见 `code_general_example.mdc`「正向示例」

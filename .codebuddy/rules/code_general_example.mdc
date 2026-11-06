@@ -193,6 +193,29 @@ text = NULL;
 return 0;
 ```
 
+```text
+// 正确：业务层打印信息完备——来源 + 事件 + 关键字段（带单位）+ 结果码，一行一事件
+printf("[module] 采集失败: channel=%d period=%dms ret=%d\r\n", channel, periodMs, ret);
+
+// 正确：同一状态只在变化时打印，避免刷屏掩盖真实变化
+if (state != lastState)
+{
+    printf("[module] 状态变化: link=%s state=%s\r\n", ifname, stateName(state));
+    lastState = state;
+}
+```
+
+```text
+// 正确：语义相同的多种事件共用一个处理器，用返回值告诉调用方是否已处理
+static int handle_refresh_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return 0;
+    (void)drive_once(EVENT_SRC);
+    return 1;
+}
+```
+
 ## 反向示例
 
 - 正向示例反例见 `code_general_badcase.mdc`「反向示例」
