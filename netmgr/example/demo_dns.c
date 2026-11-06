@@ -9,6 +9,7 @@
  *          编译：make demo_dns        运行：./demo_dns
  */
 #include <stdio.h>
+#include <string.h>
 
 #include "net_mgr_dns.h"
 
@@ -35,20 +36,21 @@ static void demo_dump_conf(void)
     fp = fopen(DEMO_DNS_CONF, "r");
     if (NULL == fp)
     {
-        printf("打开 %s 失败, 可能不存在\r\n", DEMO_DNS_CONF);
+        printf("[dns] 打开配置失败, path=%s（可能不存在）\r\n", DEMO_DNS_CONF);
         return;
     }
 
-    printf("== %s ==\r\n", DEMO_DNS_CONF);
+    printf("[dns] 配置文件内容, path=%s\r\n", DEMO_DNS_CONF);
     while (count < DEMO_LINE_MAX && NULL != fgets(line, (int)sizeof(line), fp))
     {
-        printf("%s", line);
+        line[strcspn(line, "\r\n")] = '\0';
+        printf("[dns] %s\r\n", line);
         ++count;
     }
     fclose(fp);
 
     if (0 == count)
-        printf("(空文件)\r\n");
+        printf("[dns] 配置文件为空\r\n");
 }
 
 #if (1 == DEMO_DNS_WRITE)
@@ -61,9 +63,9 @@ static void demo_dns_write(void)
 
     ret = netmgr_dns_apply(DEMO_DNS_SERVER);
     if (ret < 0)
-        printf("下发 DNS %s 失败, ret=%d\r\n", DEMO_DNS_SERVER, ret);
+        printf("[dns] 下发失败, server=%s ret=%d\r\n", DEMO_DNS_SERVER, ret);
     else
-        printf("下发 DNS %s 成功\r\n", DEMO_DNS_SERVER);
+        printf("[dns] 下发成功, server=%s path=%s\r\n", DEMO_DNS_SERVER, DEMO_DNS_CONF);
 }
 #endif
 
@@ -79,7 +81,7 @@ int main(void)
     demo_dns_write();
     demo_dump_conf();
 #else
-    printf("(DEMO_DNS_WRITE=0, 未执行下发；置 1 重新编译可观察改写结果)\r\n");
+    printf("[dns] 只读模式（DEMO_DNS_WRITE=0），未执行下发；置 1 重新编译可观察改写结果\r\n");
 #endif
     return 0;
 }

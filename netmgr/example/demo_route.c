@@ -23,7 +23,7 @@ static void demo_dump(const char* tag, const NETMGR_ROUTE* r)
     if (NULL == tag || NULL == r)
         return;
 
-    printf("%s ifname=%s gate=%s metric=%d\r\n", tag, r->ifname, r->gate, r->metric);
+    printf("[route] %s ifname=%s gate=%s metric=%d\r\n", tag, r->ifname, r->gate, r->metric);
 }
 
 /**
@@ -38,13 +38,13 @@ int main(void)
 
     ret = netmgr_route_act(&act);
     if (ret < 0)
-        printf("查询生效默认路由失败, ret=%d\r\n", ret);
+        printf("[route] 查询生效默认路由失败, table=main ret=%d\r\n", ret);
     else
         demo_dump("生效默认路由:", &act);
 
     ret = netmgr_route_dev(DEMO_IFNAME, &dev);
     if (ret < 0)
-        printf("查询 %s 默认路由失败, ret=%d\r\n", DEMO_IFNAME, ret);
+        printf("[route] 查询接口默认路由失败, ifname=%s ret=%d\r\n", DEMO_IFNAME, ret);
     else
         demo_dump("接口默认路由:", &dev);
 

@@ -16,10 +16,8 @@
 
 #include "net_mgr.h"
 
-/** 业务轮询间隔（毫秒）：驱动一轮仲裁刷新 */
-#define DEMO_POLL_MS 200
-/** 每次打印前的轮询次数，25 × 200ms = 5 秒打印一次 */
-#define DEMO_POLL_PER_PRINT 25
+/** 状态打印间隔（秒）：仲裁由库内定时线程驱动，业务只需按自己的节奏取快照 */
+#define DEMO_PRINT_S 5
 /** 状态打印轮数 */
 #define DEMO_PRINT_N 12
 
@@ -32,6 +30,8 @@
  * 写入方/读取方：仅 main 读取，运行期不修改（static const）
  * 生命周期：仅内存态，随进程存在，不持久化
  */
+/* 仲裁由库内定时线程驱动（tickMs 默认 500ms），业务侧不需要任何轮询接口；
+   本示例只在主循环里按固定间隔取快照打印，观察状态变化 */
 static const NETMGR_CONF g_demoConf = {
     .eth = {
         .enable = 1,                   /* 启用以太网 */
@@ -127,6 +127,8 @@ static const char* demo_ev_name(NETMGR_EV ev)
         return "WIFI-";
     case NETMGR_EV_WIFI_SCAN_DONE:
         return "SCAN";
+    case NETMGR_EV_DHCP_LOST:
+        return "DHCP!";
     default:
         return "UNKNOWN";
     }
@@ -175,8 +177,14 @@ static int demo_event(const NETMGR_EVENT* ev, void* user)
         break;
     case NETMGR_EV_INFO_CHANGE:
         /* 信息变化：位图标注哪些字段变了，前后快照都已给出 */
-        printf("[event] INFO   changed=0x%x ip=%s -> %s\r\n", ev->u.info.changed,
-               ev->u.info.prev.ip, ev->u.info.cur.ip);
+        printf("[event] INFO   changed=%s%s%s\r\n",
+               (0 != (ev->u.info.changed & NETMGR_LINK_F_IP)) ? "IP " : "",
+               (0 != (ev->u.info.changed & NETMGR_LINK_F_MASK)) ? "MASK " : "",
+               (0 != (ev->u.info.changed & NETMGR_LINK_F_GATE)) ? "GATE" : "");
+        printf("[event]        ip=%s -> %s mask=%s -> %s gate=%s -> %s\r\n",
+               ev->u.info.prev.ip, ev->u.info.cur.ip,
+               ev->u.info.prev.mask, ev->u.info.cur.mask,
+               ev->u.info.prev.gate, ev->u.info.cur.gate);
         break;
     case NETMGR_EV_ROUTE_CHANGE:
         printf("[event] ROUTE  %s ifname=%s gate=%s\r\n",
@@ -186,25 +194,34 @@ static int demo_event(const NETMGR_EVENT* ev, void* user)
     case NETMGR_EV_DHCP_RUNNING:
     case NETMGR_EV_DHCP_SUCC:
     case NETMGR_EV_DHCP_FAIL:
+    case NETMGR_EV_DHCP_LOST:
         printf("[event] %-6s ifname=%s err=%d\r\n", demo_ev_name(ev->ev),
                ev->u.dhcp.ref.ifname, ev->u.dhcp.err);
         break;
     case NETMGR_EV_WIFI_CONNECTED:
     case NETMGR_EV_WIFI_DISCONNECTED:
-        printf("[event] %-6s ifname=%s connected=%d ssid=%s signal=%d\r\n",
+        printf("[event] %-6s ifname=%s 连接状态=%s ssid=%s signal=%ddBm\r\n",
                demo_ev_name(ev->ev), ev->u.wifi.ref.ifname,
-               ev->u.wifi.info.connected, ev->u.wifi.info.ssid, ev->u.wifi.info.signal);
+               ev->u.wifi.info.connected ? "已连接" : "未连接",
+               ev->u.wifi.info.ssid, ev->u.wifi.info.signal);
         break;
     case NETMGR_EV_WIFI_SCAN_DONE:
-        printf("[event] SCAN   complete=%d ap=%d\r\n",
-               ev->u.scan.complete, ev->u.scan.apNum);
+        printf("[event] SCAN   完成=%s apNum=%d\r\n",
+               ev->u.scan.complete ? "是" : "否（超时或失败）", ev->u.scan.apNum);
         break;
-    default:
-        /* UP/DOWN 等以完整快照承载的事件 */
+    case NETMGR_EV_UP:
+    case NETMGR_EV_DOWN:
+    case NETMGR_EV_ENABLED:
+    case NETMGR_EV_DISABLED:
+        /* 以完整链路快照承载的事件 */
         printf("[event] %-6s %-6s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u err=%d\r\n",
                demo_ev_name(ev->ev), demo_type_name(ev->u.link.type), ev->u.link.ifname,
                ev->u.link.ip, ev->u.link.mask, ev->u.link.gate,
                (unsigned int)ev->u.link.prio, ev->u.link.err);
+        break;
+    default:
+        /* 防御：库新增事件而示例未接入时显式暴露，避免误按链路载荷解读 */
+        printf("[event] 未识别事件 type=%d（示例未覆盖，请更新 net_demo 的事件打印）\r\n", (int)ev->ev);
         break;
     }
     return 0;
@@ -219,10 +236,10 @@ static void demo_dump(const NETMGR_LINK* list, int num)
 {
     int i = 0; /* 快照下标，从 0 开始 */
 
-    printf("-------- 链路状态 --------\r\n");
+    printf("[net] 链路状态：\r\n");
     for (i = 0; i < num; ++i)
     {
-        printf("%-6s %-6s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u err=%d\r\n",
+        printf("[net]   %-6s %-6s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u err=%d\r\n",
                demo_type_name(list[i].type), demo_state_name(list[i].state),
                list[i].ifname, list[i].ip, list[i].mask,
                list[i].gate, (unsigned int)list[i].prio, list[i].err);
@@ -239,35 +256,25 @@ int main(void)
     int num = 0;                             /* 快照条数，入参为容量、出参为实际条数 */
     int ret = 0;                             /* 接口返回值 */
     int i = 0;                               /* 打印轮次，从 0 开始 */
-    int j = 0;                               /* 轮询次数，从 0 开始 */
 
     ret = netmgr_start(&g_demoConf, demo_event, NULL);
     if (ret < 0)
     {
         /* 业务程序按错误码自行打印日志 */
-        printf("启动网络管理失败, ret=%d\r\n", ret);
+        printf("[net] 启动网络管理失败, action=start ret=%d\r\n", ret);
         return 1;
     }
 
-    /* 业务主循环：周期驱动仲裁刷新，并按固定间隔打印链路状态 */
+    /* 业务主循环：仲裁由库内定时线程驱动，这里只按固定间隔打印链路状态 */
     for (i = 0; i < DEMO_PRINT_N; ++i)
     {
-        for (j = 0; j < DEMO_POLL_PER_PRINT; ++j)
-        {
-            usleep(DEMO_POLL_MS * 1000);
-            ret = netmgr_poll();
-            if (ret < 0)
-            {
-                printf("驱动仲裁失败, ret=%d\r\n", ret);
-                break;
-            }
-        }
+        sleep(DEMO_PRINT_S);
 
         num = (int)(sizeof(list) / sizeof(list[0]));
         ret = netmgr_stat_get(list, &num);
         if (ret < 0)
         {
-            printf("获取链路状态失败, ret=%d\r\n", ret);
+            printf("[net] 获取链路状态失败, action=stat_get ret=%d\r\n", ret);
             continue;
         }
         demo_dump(list, num);
@@ -275,6 +282,6 @@ int main(void)
 
     ret = netmgr_stop();
     if (ret < 0)
-        printf("停止网络管理失败, ret=%d\r\n", ret);
+        printf("[net] 停止网络管理失败, action=stop ret=%d\r\n", ret);
     return 0;
 }
