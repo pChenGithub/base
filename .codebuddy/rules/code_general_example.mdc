@@ -1,0 +1,246 @@
+---
+description: 编码通用规范正向示例：13 组合规写法样板，条文与判定口径见 code_general.mdc
+alwaysApply: true
+---
+
+# 编码通用规范 · 正向示例
+
+> 分片：`code_general.mdc`（条文）/ 本文件（正向示例）
+
+## 适用范围
+
+- 通用正例，适用于各语言源码；条文与判定口径见 `code_general.mdc`
+
+## 编程语言
+
+- 不限定语言，正向示例横跨 C/C++/Qt 等
+
+## 语言版本特性
+
+- 正向示例的版本要求同 `code_general.mdc`「语言版本特性」
+
+## 注释风格
+
+- 正向示例的注释要求见 `code_general.mdc`「注释风格」
+
+## 禁止项
+
+- 正向示例遵守 `code_general.mdc`「禁止项」全部条款
+
+## 提案模板（示例）
+
+| 项 | 内容 |
+|---|---|
+| 符号 / 位置 | `module_task_start()` @ `module/module_api.h` |
+| 变更类型 | 修改（新增 1 个参数） |
+| 变更后签名 | `int module_task_start(uint32_t period_ms)` |
+| 接口作用 | 调用方启动周期任务；由装配入口在初始化阶段调用一次 |
+| 变更理由 | 周期需按配置下发，硬编码无法满足 |
+| 影响面 | 调用方 2 处；旧签名调用将编译失败，无 ABI 兼容问题 |
+| 迁移方案 | 两处调用补传配置值；`period_ms = 0` 表示使用默认周期 |
+| 替代方案 | 保留旧接口 + 新增 setter（被否：两条事实源） |
+
+## 正向示例
+
+```text
+// 正确：代码本身合规（下标从 0 开始 + < 判断），注释解释意图而非豁免
+// 按钮命名为 btn_type_0 ~ btn_type_19，循环从 0 开始
+for (int i = 0; i < ITEMS_PER_PAGE; ++i)
+{
+    ...
+}
+
+// 正确：错误分支必打日志（含错误码/原因）
+int ret = doSomething();
+if (ret < 0)
+{
+    logError("操作失败, 错误码 %d", ret);
+    return ret;
+}
+
+// 正确：变量定义即初始化（标量给初值，数组/结构体就地清零）
+int ret = 0;
+char buf[64] = {0};
+ST_Param param = {0};
+float norm0 = 0.0f;
+
+// 正确：失败路径逐条独立判断、立即返回，正常流程零嵌套
+if (NULL == buf)
+{
+    logError("参数无效");
+    return -ERR_PARAM;
+}
+if (len <= 0)
+{
+    logError("长度非法");
+    return -ERR_PARAM;
+}
+memcpy(buf, src, len);
+
+// 正确：必需节点取到即判空、短路退出（含释放已持有的资源）；可选字段在取值处声明兜底
+cJSON* data = cJSON_GetObjectItem(root, "data");
+if (NULL == data)
+{
+    logError("响应缺少 data 节点");
+    cJSON_Delete(root);
+    return -1;
+}
+char* addr = NULL;   // 字段可缺，取值失败时按 "(无)" 打印
+getfield_strPoint(data, "reportAddr", &addr);
+
+// 正确：只处理职责所需的内容（本函数职责=取通道状态，故只取 index 与 used）
+int index = -1;   // 通道号；-1 表示字段缺失或类型不符
+int used = -1;    // 通道状态；-1 表示字段缺失或类型不符
+getfield_int(item, "index", &index);
+getfield_int(item, "used", &used);
+if (0 <= index && index < CHANNEL_MAX)
+{
+    gChannel[index].sta = used;
+    logInfo("通道 %d 状态 %d", index, used);
+}
+// name / url / modfyTime 等与"取状态"无关：一律不取、不判断、不打印
+
+// 正确：下划线命名 ≤3 段（模块 + 对象 + 属性；枚举常量同样适用）
+#define MODULE_SENSORS_MS  5000
+#define UI_DUR_FONT        64
+int module_port_dev(int commPort);
+enum ModuleCmd
+{
+    MODULE_CMD_START = 0,   /* 3 段 */
+    MODULE_CMD_STOP  = 1    /* 3 段 */
+};
+enum ModuleState
+{
+    MODULE_STATE_IDLE  = 0, /* 3 段 */
+    MODULE_STATE_BUSY  = 1, /* 3 段 */
+    MODULE_STATE_FAULT = 2  /* 3 段 */
+};
+
+// 正确：驼峰命名 ≤3 段（按大写分界计词；g_ / s_ 前缀不计段）
+void uiMainInit(void);          /* ui / Main / Init */
+void powerClickCb(void);        /* power / Click / Cb */
+
+// 正确：宏值一步到位（字面量），算式只出现在注释里
+#define MODULE_TICK_MS        3000   /* 3s = 3 × 1000 */
+#define UI_CONTENT_Y      40     /* (800 − 720) / 2：内容区垂直居中偏移 */
+
+// 正确：模块内部直接用一行取值，判空写在调用处（不为它单造取上下文函数）
+void uiWarnRefresh(lv_obj_t *warn)
+{
+    uiWarnCtx *ctx = NULL;
+    if (NULL == warn)
+    {
+        return;
+    }
+    ctx = (uiWarnCtx *)lv_obj_get_user_data(warn);
+    if (NULL == ctx)
+    {
+        return;
+    }
+    warnScan(ctx);
+}
+```
+
+```text
+// 正确：逐条独立生效——单条校验通过即写回，无效条目当条跳过（不做整批暂存）
+for (int i = 0; i < count; ++i)
+{
+    int index = -1;
+    int used = -1;
+    getFieldInt(getArrayItem(list, i), "index", &index);
+    getFieldInt(getArrayItem(list, i), "used", &used);
+    if (index < 0 || index >= CHANNEL_MAX)
+    {
+        logError("通道号异常 %d，忽略该条", index);
+        continue;                      // 当条跳过，不影响其它条目
+    }
+    if (used < 0)
+    {
+        logError("通道 %d 缺少 used，忽略该条", index);
+        continue;
+    }
+    gChannel[index].sta = used;        // 有效即生效
+    logInfo("通道 %d 状态 %d", index, used);
+}
+```
+
+```text
+// 正确：解析完成即释放原文本（结果已独立持有数据），不拖到函数末尾
+int ret = textToObj(text, &obj);
+if (0 != ret)
+{
+    free(text);
+    logError("解析失败 %d", ret);
+    return -1;
+}
+free(text);            // 最后一次使用点：立即释放并置空
+text = NULL;
+applyObj(obj, out);    // 后续只依赖 obj
+objDelete(obj);
+return 0;
+```
+```text
+// 正确：直接用接口产出的堆字符串，写完即释放（无中转缓冲）
+char *text = buildText(obj);       // 接口返回已分配字符串，调用方负责释放
+if (NULL == text)
+{
+    logError("生成失败");
+    return -1;
+}
+writeFile(file, text, strlen(text));
+free(text);
+text = NULL;
+return 0;
+```
+
+```text
+// 正确：业务层打印信息完备——来源 + 事件 + 关键字段（带单位）+ 结果码，一行一事件
+printf("[module] 采集失败: channel=%d period=%dms ret=%d\r\n", channel, periodMs, ret);
+
+// 正确：同一状态只在变化时打印，避免刷屏掩盖真实变化
+if (state != lastState)
+{
+    printf("[module] 状态变化: link=%s state=%s\r\n", ifname, stateName(state));
+    lastState = state;
+}
+```
+
+```text
+// 正确：语义相同的多种事件共用一个处理器，用返回值告诉调用方是否已处理
+static int handle_refresh_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return 0;
+    (void)drive_once(EVENT_SRC);
+    return 1;
+}
+```
+
+```text
+// 正确：能力只在其所属模块实现，调用方按依赖方向引用，不在本模块内就地实现
+/* b_conf.c */  int b_write_config(const char* path);   // 配置读写属 B 模块
+/* a_link.c */  b_write_config(path);                    // A 只调用
+
+// 正确：删除前确认全仓无引用（含示例与文档），确认后直接删，不留“备查”副本
+//   判定：有调用方或对外契约 → 保留；否则删除，历史版本由版本控制承担
+```
+
+```text
+// 正确：模块 = 一对 .c/.h；对外能力只有自身职责，跨层动作由调用方注入
+/* a_engine.c */  int a_run(A_CTX* ctx, const A_APPLY* apply);   // 纯逻辑，可单测
+/* b_impl.c   */  int b_route_add(...);                          // 真正落地系统动作
+/* c_main.c   */  static const A_APPLY kApply = { b_route_add, b_route_del };
+                  a_run(&ctx, &kApply);                          // 上层注入，无横向依赖
+```
+
+## 反向示例
+
+- 正向示例反例见 `code_general_badcase.mdc`「反向示例」
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：跨语言通用约定 / 团队规范 / 工具链约定等 -->

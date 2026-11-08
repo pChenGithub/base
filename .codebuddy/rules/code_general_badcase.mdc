@@ -1,0 +1,263 @@
+---
+description: 编码通用规范反向示例：15 组违规写法及合规改写，条文见 code_general.mdc
+alwaysApply: true
+---
+
+# 编码通用规范 · 反向示例
+
+> 分片：`code_general.mdc`（条文）/ 本文件（反向示例）
+
+## 适用范围
+
+- 通用反例，适用于各语言源码；每条只违反其说明的那一条，均附合规改写
+
+## 编程语言
+
+- 不限定语言，反向示例横跨 C/C++/Qt 等
+
+## 语言版本特性
+
+- 反向示例的版本要求同 `code_general.mdc`「语言版本特性」
+
+## 注释风格
+
+- 反向示例的注释要求见 `code_general.mdc`「注释风格」
+
+## 禁止项
+
+- 反向示例遵守 `code_general.mdc`「禁止项」全部条款
+
+## 反向示例
+
+```text
+// 错误：注释为违规代码"开脱" + 下标从 1 开始
+// i 从 1 开始：按钮命名为 btn_type_1 ~ btn_type_20，循环内需 1-based 序号
+for (int i = 1; i <= ITEMS_PER_PAGE; ++i)   // 代码违规，注释不能使其合理
+{
+    ...
+}
+
+// 错误：错误分支静默返回，问题难以排查
+int ret = doSomething();
+if (ret < 0)
+{
+    return ret;   // 无日志
+}
+
+// 错误：先定义后赋值 / 定义后靠 memset 补初始化
+int ret;
+ret = 0;
+char buf[64];
+memset(buf, 0, sizeof(buf));
+
+// 错误：失败判断嵌套——正常逻辑被裹进内层，失败路径不独立
+if (NULL != buf)
+{
+    if (len > 0)
+    {
+        memcpy(buf, src, len);
+        return 0;
+    }
+    return -ERR_PARAM;
+}
+return -ERR_PARAM;
+
+// 错误：判空点跟着使用点走——三元里兜一次、使用处再判一次（取值处未短路退出）
+cJSON* data = cJSON_GetObjectItem(root, "data");
+cJSON* list = (NULL == data) ? NULL : cJSON_GetObjectItem(data, "medias");
+if (!cJSON_IsArray(list))
+{
+    return -1;
+}
+if (NULL != data)                             // 违规：判空分散到使用点，失败未在取值处处理
+    getfield_strPoint(data, "reportAddr", &addr);
+
+// 错误：职责只是"取状态"，却把整条记录的字段全取一遍再打印（无谓取值 + 无谓兜底）
+char* name = NULL;
+char* url = NULL;
+char* modfy = NULL;                           // 这三个字段本函数根本不用
+getfield_strPoint(item, "name", &name);
+getfield_strPoint(item, "url", &url);
+getfield_strPoint(item, "modfyTime", &modfy);
+logInfo("index %d, name %s, used %d, url %s, modfyTime %s",
+        index, NULL == name ? "(无)" : name, used,
+        NULL == url ? "(无)" : url, NULL == modfy ? "(无)" : modfy);
+
+// 错误：限定词层层堆叠，下划线超过 3 段，读起来要"断句"
+#define MODULE_POLL_GET_SENSOR_INTERVAL_MS 5000
+int module_proto_get_sensor_status(int *version, unsigned char *sensors, int maxSensors);
+
+// 错误：枚举常量同样超 3 段（把多余限定词再挂一层）
+enum ModuleCmd
+{
+    MODULE_CMD_START_FAST = 0,    /* 4 段，应压成 MODULE_CMD_START */
+    MODULE_CMD_STOP_SLOW  = 1     /* 4 段，应压成 MODULE_CMD_STOP */
+};
+enum ModuleState
+{
+    MODULE_STATE_IDLE_EXTRA = 0,  /* 4 段，应压成 MODULE_STATE_IDLE */
+    MODULE_STATE_BUSY_FAST  = 1   /* 4 段，应压成 MODULE_STATE_BUSY */
+};
+
+// 错误：驼峰命名限定词堆叠超过 3 段（按大写分界计词）
+void uiPanelItemCreate(void);     /* ui / Panel / Item / Create = 4 段，应压成 uiItemCreate */
+void uiPageItemApplyStyle(void);  /* 5 段，应压成 uiItemStyle 之类 */
+
+// 错误：宏值还要再算一次——看代码看不出最终值，单位/量纲易在两层算错
+#define MODULE_TICK_MS        (3 * 1000)
+#define UI_CONTENT_Y      ((UI_SCREEN_H - UI_CONTENT_H) / 2)
+#define MQTT_AUTH_MS (1 * 60 * 1000)
+
+// 错误：模块内部过度封装——只有"判空 + 一行取值 + return"的纯转发层，且仅一处调用
+static uiWarnCtx *warnGetCtx(lv_obj_t *warn)
+{
+    if (NULL == warn)
+    {
+        return NULL;
+    }
+    return (uiWarnCtx *)lv_obj_get_user_data(warn);
+}
+
+// 错误：为对称好看而造的同义转发（既无校验也无转换，调用处写原 API 更直接）
+static int32_t getObjWidth(lv_obj_t *obj)
+{
+    return lv_obj_get_width(obj);
+}
+```
+
+```text
+// 错误：为"整批有效"的错觉先暂存全量、解析完再统一写回——多一份空间 + 多一次遍历，且并未原子
+int sta[CHANNEL_MAX] = {0};            // 暂存状态
+char given[CHANNEL_MAX] = {0};         // 还得再来一个数组区分"本批是否给出"
+for (int i = 0; i < count; ++i)
+{
+    ...
+    sta[index] = used;                 // 先存着，不生效
+    given[index] = 1;
+}
+for (int i = 0; i < CHANNEL_MAX; ++i)  // 解析完再遍历一次写回
+{
+    if (0 == given[i])
+        continue;
+    gChannel[i].sta = sta[i];
+}
+```
+
+```text
+// 错误：原文本解析完就不再使用，却拖到函数末尾才释放（期间白占资源）
+int ret = textToObj(text, &obj);
+if (0 != ret)
+{
+    free(text);
+    logError("解析失败 %d", ret);
+    return -1;
+}
+applyObj(obj, out);    // 与 text 无关的处理
+logInfo("已应用");
+objDelete(obj);
+free(text);            // 最后一次使用在解析处，此处才释放 → 延迟释放
+return 0;
+```
+```text
+// 错误：为同一份数据再分配一块缓冲并整串拷贝（纯中转，无格式/生命周期需求）
+char *text = buildText(obj);
+if (NULL == text)
+{
+    logError("生成失败");
+    return -1;
+}
+char *buf = malloc(strlen(text) + 1);   // 多一次分配
+if (NULL == buf)
+{
+    free(text);
+    return -1;
+}
+strcpy(buf, text);                      // 内容与来源完全相同
+writeFile(file, buf, strlen(buf));
+free(buf);
+free(text);
+return 0;
+```
+
+```text
+// 错误：裸数值 + 无主语 + 多事件拼一行，读不出发生了什么事
+printf("err %d %d %d\n", ret, channel, periodMs);
+// 合规改写：printf("[module] 采集失败: channel=%d period=%dms ret=%d\r\n", channel, periodMs, ret);
+
+// 错误：状态未变化也逐轮打印，刷屏并淹没真正的状态变化
+printf("state %d\n", state);
+// 合规改写：if (state != lastState) { printf("[module] 状态变化: state=%s\r\n", stateName(state)); }
+```
+
+```text
+// 错误：两个函数体逐行相同，只是名字不同——同一职责被复制两份
+static void handle_link_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return;
+    (void)drive_once(EVENT_SRC);
+}
+
+static void handle_addr_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return;
+    (void)drive_once(EVENT_SRC);
+}
+// 合规改写：合并为一个函数，调用方按需传入来源/类型；确需分开时必须有实质差异
+static int handle_refresh_event(const EVENT* ev)
+{
+    if (!event_is_relevant(ev))
+        return 0;
+    (void)drive_once(EVENT_SRC);
+    return 1;
+}
+```
+
+```text
+// 错误：模块 A 里就地实现了模块 B 的能力（与 A 的职责无关）
+/* a_link.c */
+static int a_write_b_config(const char* path)   // 配置读写属 B 模块
+{
+    FILE* fp = fopen(path, "w");
+    ...
+}
+
+// 错误：死代码滞留——不可达分支、无引用字段、注释掉的旧实现
+static int a_unused_helper(void) { return 0; }  // 全仓无调用
+#if 0
+static void a_old_flow(void) { ... }            // 旧实现留着“备查”
+#endif
+struct a_ctx { int legacy; };                   // legacy 字段无人读写
+
+// 合规改写：能力归位到 B；无引用即删（需要历史用版本控制查，不留在源码里）
+/* b_conf.c */  int b_write_config(const char* path) { ... }
+```
+
+```text
+// 错误：同级模块横向依赖（a_link 直接调 b_conf 的符号）
+/* a_link.c */
+#include "b_conf.h"                       // 与 A 同级的 B 模块
+int a_open(void) { return b_write_config("/tmp/a.conf"); }
+
+// 错误：模块功能残缺——open 只做一半，close 要调用方补做内部步骤
+int a_open(void) { a_fd = open_device(); return 0; }   // 未连通、未复位状态
+// 调用方被迫补：a_internal_reset(); a_link_up();
+
+// 合规改写：能力由上层注入（依赖倒置），模块自身 open/close 成对且自洽
+typedef struct { int (*write_conf)(const char* path); } A_APPLY;   /* 上层注入 */
+int a_open(const A_APPLY* apply) { ...; apply->write_conf("/tmp/a.conf"); ...; }
+int a_close(void) { ...; /* 内部状态自己复位 */ return 0; }
+```
+
+## 正向示例
+
+- 反向示例正例见 `code_general_example.mdc`「正向示例」
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：跨语言通用约定 / 团队规范 / 工具链约定等 -->

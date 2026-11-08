@@ -1,7 +1,7 @@
 # base 项目描述
 
-- 更新日期: 2026-09-18
-- 状态: 已初始化（基于代码仓库提炼四要素 + 用户确立项目原则）
+- 更新日期: 2026-11-02
+- 状态: 已初始化（基于代码仓库提炼四要素 + 用户确立项目原则）；2026-11-02 新增 `netmgr/` 网络管理模块；2026-11-03 netmgr 分层重构（撤销 linktype、新增 sys 层 wpa、统一事件模型）
 
 ## 一、项目概述
 
@@ -50,6 +50,15 @@
 
 仓库为「能力模块集合」：每个顶层目录是一个独立功能模块，自带 `.h/.c` 与错误码头文件 `*_errno.h`（或 `*Err.h`），由 `base.pri` 通过 `DEFINES` 宏选择性编入宿主工程。模块之间尽量单一职责、互不交叉。
 
+`netmgr/` 为编排层模块（管理多条链路上网的主备切换），**不复用 `netopt/` 的接口**，仅参考其实现机制（ioctl / netlink / wpa 控制 / udhcpc），两条模块线互不依赖。
+
+`netmgr/` 内部为四层目录，依赖方向单向 `api → core → sys → common`：
+
+- `api/`：对外接口，只做入参校验与转调；
+- `core/`：仲裁层，链路装配、状态判定、优先级选举、路由与 DNS 同步、事件汇聚；三条链路实现（`net_mgr_eth/wifi/cell.c`）与就绪判定（`net_mgr_link.c`）属本层内部；
+- `sys/`：系统适配六模块 `iface / route / dhcp / dns / wpa / event`，零横向依赖；`wpa` 自管 wpa_supplicant 进程（依赖 common 的进程控制，属向下依赖）；
+- `common/`：错误码、通用校验、长度常量与进程控制（`net_mgr_proc`），无业务类型。
+
 ### base.pri 条件编译映射
 
 | 宏 | 编入源文件 | 头文件 / 包含路径 | 附加 LIBS |
@@ -66,6 +75,7 @@
 | `M_LOG` | `zlog/lib_log.c`、`zlog/lib_logTool.c` | `lib_log.h`、`lib_logTool.h` | `-Lzlog/lib -lzlog` |
 | `M_NET` | `netopt/net_opt.c`、`net_dhcp.c`、`net_netlink.c` | `net_opt.h`、`net_dhcp.h`、`net_netlink.h` | — |
 | `M_MMC` | `misc/mmc_opt.c` | `mmc_opt.h` | — |
+| `M_NETMGR` | `netmgr/` 四层共 14 个源文件：`api/net_mgr.c`；`core/net_mgr_core.c` + `net_mgr_link.c` + `net_mgr_eth.c` + `net_mgr_wifi.c` + `net_mgr_cell.c`；`sys/net_mgr_iface.c` + `net_mgr_route.c` + `net_mgr_dhcp.c` + `net_mgr_dns.c` + `net_mgr_wpa.c` + `net_mgr_event.c`；`common/net_mgr_util.c` + `net_mgr_proc.c` | 各层自带头文件；包含路径 `api`、`core`、`sys`、`common` | `-lpthread` |
 
 ### 未纳入 base.pri 的模块/文件（现状事实）
 
@@ -80,6 +90,12 @@
 - **C 语言面向对象封装（策略模式）**：`mqttClient.h` 定义抽象接口 `MQClient`（含 `MQTYPE type`）；`mqttPahocClient.h` 以 `MQClientPahoC` 首成员 `MQClient base` 实现「继承」；由 `createMqttclient` 工厂创建具体实现。
 - **线程与同步**：链表用 `pthread_mutex_t`；串口模块用 `pthread_mutex_t` + `sem_t`（异步收发线程）；MQTT 提供同步发送模式（`pushOneMessageWait`，基于 `sem_t`）。
 - **Web 路由表驱动**：`mongoose/web_config.h` 以 `WEB_API_PATH` 路由树（`num/path/next_level/func_hand/type`）注册 HTTP 处理函数，统一 `web_code_rsp*` 封装响应。
+- **优先级主备（netmgr）**：优先级 0-255 **直接作为默认路由 metric**，就绪链路各下发一条带 metric 的默认路由，由内核选路并在链路失效时自动回退；仲裁层只做状态判定与事件上报，不自研切换状态机。
+- **链路操作表（netmgr）**：`NETMGR_OPS`（open/close/refresh）按链路类型提供实现，以太网 / WiFi / 4G 互相独立，新增接入方式只增操作表实现（PPP、QMI 已留位）；操作表是 core 内部契约，不外露为公开层。
+- **链路四态（netmgr）**：`DISABLED`（用户显式关闭，不参与刷新与仲裁）/ `DOWN`（已启用但不可用）/ `READY`（已取 IP 与网关）/ `ACTIVE`（metric 最小，承载默认流量）；运行时用 `netmgr_link_enable(type, on)` 开关，开关按缓存配置重建并立即生效。
+- **事件模型（netmgr）**：唯一回调 `netmgr_event_cb(const NETMGR_EVENT* ev, void* user)`；`NETMGR_EVENT` 外层只有判别符 `ev`，其余为联合体裁荷（`link / dhcp / wifi / info / sw / route / scan`），共 14 类事件（UP/DOWN/SWITCH/ENABLED/DISABLED/INFO_CHANGE/ROUTE_CHANGE/DHCP×4（含 LOST）/WIFI×3）；事件在锁外分发。
+- **无线程模型（netmgr）**：core 与 api 不建线程；netlink 事件由 sys 层回调直接驱动一轮仲裁，其余状态变化由业务周期调用 `netmgr_poll` 补齐。
+- **无日志约定（netmgr）**：模块内部不打印任何日志，异常一律以 `NETMGRERR_*` 负值返回，失败原因随 `NETMGR_LINK.err` 上报，由调用方决定是否打印。
 
 ## 四、项目模块
 
@@ -101,6 +117,7 @@
 | 串口 | `uart/` | 串口打开/配置/读（含超时）/写/关闭；异步封装（收发线程 + 锁 + 信号量 + 回调） |
 | 链表 | `dataStruct/linkedList/` | 带互斥锁的双向链表，支持头插/尾插/按索引或节点删除/遍历/清空 |
 | 杂项工具 | `misc/` | C 混合 shell 执行、崩溃转储到文件、MMC 容量/使用率统计（ioctl/statvfs）、MAC 与 SN 转换、CPU/内存使用率与温度、随机数 |
+| 网络管理 | `netmgr/` | 以太网 / WiFi(STA、AP) / 4G(ECM) 链路统一管理：四态状态机、运行时开关、优先级即路由 metric 实现主备自动切换、DNS 下发、14 类统一事件、WiFi 扫描、DHCP 状态回调；四层目录 `api/core/sys/common`，**自包含，不引用 netopt** |
 
 ### 第三方模块（清单）
 

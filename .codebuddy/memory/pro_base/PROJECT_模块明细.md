@@ -1,7 +1,7 @@
 # base 项目模块明细
 
-- 更新日期: 2026-09-18
-- 状态: 已初始化（自 `PROJECT.md` 拆分）
+- 更新日期: 2026-11-02
+- 状态: 已初始化（自 `PROJECT.md` 拆分）；2026-11-02 补入 `netmgr/` 明细；2026-11-03 按四层重构更新 `netmgr/` 明细
 - 说明: 本文件为 `pro_base/PROJECT.md` 的扩展文件，承载各模块详细接口/结构体/宏/错误码、第三方库收纳明细与示例验证代码；项目四要素概览见同目录 `PROJECT.md`。
 
 ## 一、自研模块明细
@@ -121,6 +121,46 @@
 - **MMC（`M_MMC`）**：`mmc_opt.c` / `mmc_opt.h`；接口 `mmc_getsize`、`mmc_getUseSize`、`mmc_getFreePercent`、`mmc_getUsagerate`（基于 ioctl / statvfs）
 - **mac（未纳入 `base.pri`）**：`mac_opt.c` / `mac_opt.h`；接口 `mac_to_snstr`、`mac_to_snarray`、`get_cpu_temperature_raw`、`get_cpu_temperature`、`get_cpu_Usagerate`、`get_mem_Usagerate`
 - **rand（未纳入 `base.pri`）**：`rand_ops.c` / `rand_ops.h`；接口 `rand_get`、`random_get`、`rand_get_0to3600`
+
+### 13. netmgr/ — 网络管理服务
+
+- **编译开关**：`M_NETMGR`｜四层目录共 14 个源文件：`api/net_mgr.c`；`core/net_mgr_core.c` + `net_mgr_link.c` + `net_mgr_eth.c` + `net_mgr_wifi.c` + `net_mgr_cell.c`；`sys/net_mgr_iface.c` + `net_mgr_route.c` + `net_mgr_dhcp.c` + `net_mgr_dns.c` + `net_mgr_wpa.c` + `net_mgr_event.c`；`common/net_mgr_util.c` + `net_mgr_proc.c`｜构建片段 `netmgr/netmgr.pri`（分级 `sys` / `core` / `all`）
+- **依赖**：`-lpthread`；外部命令 `udhcpc`、`wpa_supplicant`、`hostapd`、`udhcpd`。**不依赖 netopt 及 base 内其它自研模块**
+- **职责**：以太网 / WiFi / 4G 三类链路统一管理；四态状态机与运行时开关；按优先级（= 默认路由 metric）实现主备自动切换；DNS 下发；14 类统一事件；WiFi 扫描
+- **分层（依赖单向 `api → core → sys → common`）**：
+  - `api/`：入参校验 + 转调，无业务逻辑
+  - `core/`：仲裁层；含三条链路实现（eth/wifi/cell）与就绪判定（link），操作表 `NETMGR_OPS` 为内部契约；**仲裁机制独立成 `net_mgr_arbiter`**（五阶段：刷新 → 差异识别 → 路由同步 → 主链路选举 → DNS/切换应用，产出值语义事件数组；不启停进程、不加锁，由 `core_tick` 加锁驱动并在锁外分发），`net_mgr_core.c` 只保留对外接口、链路生命周期与事件分发
+  - `sys/`：`iface`（ioctl 接口）、`route`（rtnetlink 默认路由）、`dhcp`（udhcpc 取址）、`dns`（resolv.conf）、`wpa`（wpa_supplicant 控制协议、事件与**进程生命周期**——`netmgr_wpa_start/stop` 自管拉起与结束）、`ap`（AP 侧 hostapd + udhcpd 的配置生成与**进程生命周期**——`netmgr_ap_start/stop/running`，不碰 iface）、`event`（netlink 事件）；七模块零横向依赖
+  - `common/`：错误码、通用校验、长度常量（`net_mgr_limits.h`）、**进程控制 `net_mgr_proc`**（`/proc` + `system`，供 sys 层模块自管外部进程）
+- **对外接口**：
+  - 生命周期：`netmgr_start`（总配置 + 统一事件回调 + user）、`netmgr_stop`（**已删除 `netmgr_poll`**：仲裁由库内定时线程与事件共同驱动，业务无刷新接口）
+  - 开关：`netmgr_link_enable(type, on)`（按缓存配置重建，立即生效）
+  - 优先级：`netmgr_prio_set`、`netmgr_prio_get`（类型级，0-255，小者优先）
+  - 状态：`netmgr_stat_get`（快照数组，容量入参 / 条数出参）
+  - 链路配置：`netmgr_eth_set`、`netmgr_wifi_set`、`netmgr_cell_set`（先撤路由 → 关链路 → 按新配置拉起 → 立即仲裁）
+  - DNS：`netmgr_dns_set`（写 `/etc/resolv.conf`，空串表示清除）
+  - WiFi 扫描：`netmgr_wifi_scan(list, num)`（同步触发并等结束，结果直接写入调用方数组，事件 `apNum` 与写入条数同源一致）、`netmgr_wifi_scan_result`（读取最近一次扫描结果，与 scan 返回内容一致，上限 16 条）
+- **关键类型**：
+  - `NETMGR_TYPE`（`ETH` / `WIFI` / `CELL`）
+  - `NETMGR_STATE`（`DISABLED` / `DOWN` / `READY` / `ACTIVE`；`DISABLED` 为用户显式关闭，`ACTIVE` 由仲裁得出）
+  - `NETMGR_EV` 14 类：`UP` / `DOWN` / `SWITCH` / `ENABLED` / `DISABLED` / `INFO_CHANGE` / `ROUTE_CHANGE` / `DHCP_RUNNING` / `DHCP_SUCC` / `DHCP_FAIL` / `WIFI_CONNECTED` / `WIFI_DISCONNECTED` / `WIFI_SCAN_DONE` / `DHCP_LOST`（追加末尾，既有取值不变）
+  - `NETMGR_EVENT`：外层只有 `ev`，其余为联合体 `u`（`link` / `dhcp` / `wifi` / `info` / `sw` / `route` / `scan`）；回调 `netmgr_event_cb`
+  - `NETMGR_LINK`（快照，含 `ip/mask/gate/prio/err`）、`NETMGR_WIFI_AP` / `NETMGR_WIFI_INFO`（随 `sys/net_mgr_wpa.h`）
+  - 配置：`NETMGR_ETH_CONF`、`NETMGR_WIFI_CONF`（STA 支持 DHCP/静态，AP 含 ip/mask/start/end）、`NETMGR_CELL_CONF`、`NETMGR_CONF`
+  - 内部：`NETMGR_CTX`（含 `prev` / `wifi` / `route_on` / `rmetric` / `rgate`）、`NETMGR_OPS`（open/close/refresh）——**refresh 只做状态投影**（只写 ctx 的 ip/mask/gate/state/err，不许启停进程或取址会话）；取址会话的可靠性由 sys 层保证，仲裁层无重拉逻辑
+- **实现要点**：
+  - 路由：`RTM_NEWROUTE` / `RTM_DELROUTE` + `RTA_GATEWAY` / `RTA_OIF` / `RTA_PRIORITY`；ioctl `SIOCADDRT` 无法可靠表达 metric，故不采用
+  - 路由查询：`RTM_GETROUTE` dump，筛 `dst_len==0` 的 IPv4 默认路由并保留 metric 最小者（`netmgr_route_act` 全表 / `netmgr_route_dev` 指定接口）
+  - 事件：socket 订阅 `RTMGRP_LINK|RTMGRP_IPV4_IFADDR|RTMGRP_IPV4_ROUTE`（可传 `groups` 按需扩展）；事件细分为 6 类并带 `family/flags/metric`；识别 `NLMSG_OVERRUN` 上报 `NETMGR_NEV_LOST`；`SO_RCVBUF` 128KB
+  - 仲裁驱动（四类显式调用 `core_drive(CORE_DRIVE_*)`，是阅读机制的唯一入口）：① `CORE_DRIVE_EVENT` netlink 事件 ② `CORE_DRIVE_CONFIG` 显式配置接口 ③ `CORE_DRIVE_START` 启动首轮 ④ **`CORE_DRIVE_TIMER` 内部定时线程**（`core_dhcp_cb` 只上报事件、不驱动仲裁）（恒定启动，间隔 `NETMGR_CONF.tickMs`，<=0 取默认 500ms，覆盖 hostapd 退出等无事件场景，等待用条件变量可即时退出）；`core_tick` 只做加锁 → `netmgr_arb_run` → 解锁分发；就绪链路各下发 `default metric=prio`，`prio` 最小者为 `ACTIVE`
+  - WiFi STA：进程生命周期由 `sys/net_mgr_wpa` 自管（`netmgr_wpa_start`：kill 残留 → conf_write → spawn → wait → open；`netmgr_wpa_stop` 反向；core 只调用）；控制协议为 **unix dgram 裸命令/裸回包**（`CTRL-REQ` 包裹不被使用，回包失败以 `FAIL` 起头），**客户端 socket 必须 bind 本地地址**否则服务端回包无处投递（命令全部超时），实现用 `/tmp/netmgr_wpa.<pid>.{cmd,ev,probe}.sock` 并在 close 时删除；等待一律按挂钟计时（wait 10s、scan 8s、connect 10s），控制口就绪用“临时 socket + PING 应答”三态探测（有应答/连不上=残留/连上不应答=忙），start 前清理残留 socket，`REMOVE_NETWORK all` → `ADD_NETWORK` → `SET_NETWORK ssid/psk` → `ENABLE_NETWORK` → `SELECT_NETWORK` → 等 `wpa_state=COMPLETED` → DHCP 或静态地址；配置**不持久化**（`wpa.conf` 不写 `update_config`，每次连接重建网络；国家码经 `netmgr_wpa_conf_write` 入参下发，NULL 不写 `country` 行），连接任一步失败按编号 `REMOVE_NETWORK` 回滚，`netmgr_wpa_disconnect` 断开后清空全部网络避免自动重连；`NETMGR_WIFI_INFO.signal` 由 `SIGNAL_POLL` 的 `RSSI` 补齐，`SCAN_RESULTS` 用 8KB 堆缓冲接收、超长返回 `-NETMGRERR_BUFF` 不截断，加密判定匹配 `WPA`/`RSN`/`WEP`；通道未打开统一返回 `-NETMGRERR_STATE`，`netmgr_wpa_is_open()` 可查询；事件通道双 socket（命令/监听分离 + `ATTACH`）+ sys 层接收线程，上报 `CONNECTED/DISCONNECTED/SCAN_DONE/ASSOC_REJECT/TERMINATING` 五类（`netmgr_wpa_event_open/close`，close 与 `netmgr_wpa_close` 联动）；扫描默认等待 8s，超时后扫描仍在后台、结果可读
+  - WiFi AP：配置与进程在 `sys/net_mgr_ap`（hostapd `/tmp/netmgr_ap.conf`、udhcpd `/tmp/netmgr_dhcpd.conf`，`dns` 非空才写 `opt dns`；`netmgr_ap_start` 先停旧实例再按新配置拉起，`netmgr_ap_running` 以 hostapd 存活为判据）；core 负责**先配置接口地址再启动服务**、STA/AP 互斥（同一射频不并发）与 `gate` 恒空不参与默认路由
+  - DHCP（**长驻会话模型**）：`popen` 执行 `udhcpc -i X -p pidfile -f`（**不加 `-n`/`-q`**：取不到租约由 udhcpc 自身持续重试、取到后常驻自身续租，会话只在 stop 或进程异常退出时结束，修复了原“一次性取址、租约到期无人续租”的缺陷）+ 逐行判定输出；状态回调 `RUNNING / SUCC / FAIL(err)`，**SUCC 仅在会话首次拿到租约时上报**（续租不重复），FAIL 有两种来源：会话内超过 10 秒未取到租约（持续重试，成功后再报 SUCC）、udhcpc 异常退出且未取到租约（本层节流 1 秒自动重建）；已取得租约后又退回发现阶段（`sending discover`）上报一次 `LOST`，重新取到再报 SUCC；会话内解析租约行得到地址与租约时长，`netmgr_dhcp_lease_get(ifname, NETMGR_DHCP_LEASE*)` 可查（`remainSec` 按获取时刻 + 租期 - 现在推算，过期 valid=0；服务器标识不解析）；`netmgr_dhcp_running` 表示会话运行中（含续租阶段）；会话由链路 open 建立、close 停止（按 pidfile 发 SIGTERM）；**stop 支持“自线程”调用**——业务在 DHCP 回调里关链路时，stop 会在取址线程内被调用，实现里用 `pthread_equal(pthread_self(), item->tid)` 检测后只置 `stopReq` + 结束 udhcpc 并立即返回 0（不等待自己收尾），否则会白等 3 秒并返回假错误 `-NETMGRERR_TIMEOUT`；同理 `netmgr_wpa_event_close` 在事件线程内被调用时跳过 `pthread_join`（否则自 join 死锁）。这两处检测属关键防御，不可当冗余删除；本层不打日志、失败返回负错误码
+  - 就绪判定：`core_link_ready` = 物理连通 + 已取 IP + 路由表回查到网关；静态链路用 `core_link_ready_static`（网关取配置值）
+  - 日志：模块内部**不打印任何日志**，异常以 `NETMGRERR_*` 负值返回
+- **错误码**：`NETMGRERR_*`（200~214，避开 netopt 0~110）
+- **示例**：`netmgr/example/`，`net_demo.c`（静态配置初始化，业务轮询驱动）+ `demo_core.c`（仲裁层双链路交互演示：eth+wifi，覆盖 core 全部对外接口，目标板验证 wpa 事件与主备切换用）+ 8 个 sys 模块独立示例（`demo_iface` / `demo_route` / `demo_dhcp` / `demo_proc` / `demo_dns` / `demo_event` / `demo_wpa` / `demo_ap`），各自只链接对应模块源文件
+- **已知限制**：4G 仅 ECM/RNDIS/NCM（PPP、QMI 返回 `NETMGRERR_CONF`）；AP 信道固定 6、依赖 hostapd / udhcpd；**STA 与 AP 按互斥设计**（同一射频不并发，不做能力探测，AP+STA 共存需另立双 vif + NAT 需求）；未在目标板实机验证真实 WiFi/4G
 
 ## 二、第三方库收纳明细
 
