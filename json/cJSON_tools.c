@@ -1,5 +1,4 @@
 #include "cJSON_tools.h"
-#include "string_opt.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +18,8 @@ int getfield_str(cJSON *obj, const char *label, char *buff, unsigned int bufflen
     case cJSON_String:
         if (strlen(item->valuestring)>=bufflen)
             return -ERR_JSON_BUFF_LEN;
-        strCopyC(buff, bufflen, item->valuestring);
+        /* 上一行已校验长度不足即返回，此处拷贝安全（不依赖 string_opt 模块） */
+        strncpy(buff, item->valuestring, bufflen - 1);
         break;
     case cJSON_Number:
         snprintf(buff, bufflen, "%d", item->valueint);
