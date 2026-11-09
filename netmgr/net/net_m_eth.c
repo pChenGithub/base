@@ -6,7 +6,6 @@
  */
 #include "net_m_ctx.h"
 
-#include "net_m_err.h"
 #include "net_mgr_dhcp.h"
 #include "net_mgr_err.h"
 #include "net_mgr_iface.h"
@@ -40,13 +39,13 @@ static int eth_open(NET_M_LINK_RT* link, const void* conf)
 
     if (NULL == link || NULL == cfg)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     priv = (NET_M_ETH_PRIV*)calloc(1, sizeof(NET_M_ETH_PRIV));
     if (NULL == priv)
     {
-        return -NETM_ERR_MEM;
+        return -NETMGRERR_MEM;
     }
     memcpy(&priv->conf, cfg, sizeof(priv->conf));
     priv->head.type = NET_M_ETH;
@@ -85,7 +84,7 @@ static int eth_open(NET_M_LINK_RT* link, const void* conf)
         if (!netmgr_ip_valid(priv->conf.ip) || !netmgr_ip_valid(priv->conf.mask))
         {
             free(priv);
-            return -NETM_ERR_CONF;
+            return -NETMGRERR_CONF;
         }
         ret = netmgr_iface_setip(priv->conf.ifname, priv->conf.ip);
         if (ret < 0)
@@ -114,7 +113,7 @@ static int eth_close(NET_M_LINK_RT* link)
 
     if (NULL == link)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     /* 停止取址失败不阻断资源释放，错误码在末尾上抛 */
@@ -146,7 +145,7 @@ static int eth_refresh(NET_M_LINK_RT* link)
 
     if (NULL == link || NULL == link->priv)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     priv = (NET_M_ETH_PRIV*)link->priv;
 

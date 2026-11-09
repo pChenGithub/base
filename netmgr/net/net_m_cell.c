@@ -2,12 +2,11 @@
  * @file net_m_cell.c
  * @brief net 4G 蜂窝链路实现：ECM 网卡 + DHCP（net 层）
  * @details 当前业务暂无 4G 需求，本文件保留完整兼容接口与 ECM 通路：
- *          mode 为 PPP / QMI 时在分配资源前直接返回 -NETM_ERR_NOTSUP，
+ *          mode 为 PPP / QMI 时在分配资源前直接返回 -NETMGRERR_NOTSUP，
  *          待接入方式明确后再补齐拨号实现，不在本层留下半成品状态。
  */
 #include "net_m_ctx.h"
 
-#include "net_m_err.h"
 #include "net_mgr_dhcp.h"
 #include "net_mgr_err.h"
 #include "net_mgr_iface.h"
@@ -39,19 +38,19 @@ static int cell_open(NET_M_LINK_RT* link, const void* conf)
 
     if (NULL == link || NULL == cfg)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     /* 第 1 步：接入方式校验，未实现的拨号方式在分配资源前拒绝 */
     if (NET_M_CELL_ECM != cfg->mode)
     {
-        return -NETM_ERR_NOTSUP;
+        return -NETMGRERR_NOTSUP;
     }
 
     priv = (NET_M_CELL_PRIV*)calloc(1, sizeof(NET_M_CELL_PRIV));
     if (NULL == priv)
     {
-        return -NETM_ERR_MEM;
+        return -NETMGRERR_MEM;
     }
     memcpy(&priv->conf, cfg, sizeof(priv->conf));
     priv->head.type = NET_M_CELL;
@@ -101,7 +100,7 @@ static int cell_close(NET_M_LINK_RT* link)
 
     if (NULL == link)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     if ('\0' != link->ifname[0])
@@ -129,7 +128,7 @@ static int cell_refresh(NET_M_LINK_RT* link)
 {
     if (NULL == link || NULL == link->priv)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     /* 4G 恒为 DHCP 取址：接口消失、就绪判定与 DOWN 归因共用公共实现 */

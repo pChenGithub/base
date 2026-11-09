@@ -8,8 +8,8 @@
  *          2) 链路状态 NET_M_LINK.state 只表达客观状态，ACTIVE 由仲裁结果在快照中叠加；
  *          3) 错误不吞：内部故障记入 NET_M_LINK.fault 并上报 NET_M_EV_FAULT，
  *             业务语义异常记入 NET_M_LINK.err 并随事件上报。
- *          依赖方向：net -> sys -> common，不依赖 netmgr/core 与 netmgr/api。
- *          本层不打印任何日志，异常一律以负值返回（NETM_ERR_* 或 sys 层 NETMGRERR_*）。
+ *          依赖方向：net -> sys -> common，不依赖其他模块。
+ *          本层不打印任何日志，异常一律以负值返回（NETMGRERR_*，common 层统一定义，含 sys 层原样上抛的码）。
  */
 #ifndef __NET_M_DEF_H__
 #define __NET_M_DEF_H__
@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#include "net_m_err.h"
+#include "net_mgr_err.h"
 #include "net_mgr_wpa.h"
 
 /* ===== 类型定义 ===== */
@@ -95,7 +95,7 @@ typedef struct {
     char ip[16];           /**< 当前 IP，未取得时为空串 */
     char mask[16];         /**< 当前掩码，未取得时为空串 */
     char gate[16];         /**< 当前网关，未取得时为空串 */
-    int err;               /**< 业务语义异常码（0 表示无异常），负值为 NETM_ERR_* 或 sys 层错误码 */
+    int err;               /**< 业务语义异常码（0 表示无异常），负值为 NETMGRERR_* */
     int fault;             /**< 内部故障码（0 表示无故障），由 NET_M_EV_FAULT 上报 */
     int faultStage;        /**< 故障阶段（NET_M_STAGE），fault 为 0 时无意义 */
     NET_M_WIFI_INFO wifi;  /**< WiFi 连接信息，仅 WiFi 链路有效，其余链路恒为空 */
@@ -242,7 +242,7 @@ typedef struct {
     char dns[16];                  /**< DNS 服务器，空则不参与下发 */
 } NET_M_WIFI_CONF;
 
-/** 4G 接入方式；PPP / QMI 为预留，当前构建返回 -NETM_ERR_NOTSUP */
+/** 4G 接入方式；PPP / QMI 为预留，当前构建返回 -NETMGRERR_NOTSUP */
 typedef enum {
     NET_M_CELL_ECM = 0, /**< ECM/RNDIS/NCM 网卡 + DHCP（已实现） */
     NET_M_CELL_PPP,     /**< PPP 拨号（预留） */
@@ -276,19 +276,19 @@ typedef struct {
  * @details 启动后模块自建 1 个管理线程：周期仲裁、netlink 事件、DHCP 回调、业务配置
  *          全部作为消息进入同一线程串行处理，业务无需驱动任何刷新接口。
  *          配置内容在函数内复制，调用返回后外部可释放；配置非法（启用链路优先级冲突、
- *          必填项缺失）返回 -NETM_ERR_CONF 且不启动。
+ *          必填项缺失）返回 -NETMGRERR_CONF 且不启动。
  * @param conf 总配置，不可为空
  * @param cb   事件回调，可为空（不需要通知时）
  * @param user 回调透传的用户指针，可为空
- * @return 0 成功；负值为 NETM_ERR_* 或 sys 层错误码
+ * @return 0 成功；负值为 NETMGRERR_*
  */
 int netm_start(const NET_M_CONF* conf, net_m_event_cb cb, void* user);
 
 /**
  * @brief 停止网络管理服务：停止定时驱动、撤销默认路由、关闭全部链路、回收管理线程
- * @details 未启动时返回 -NETM_ERR_STATE。在事件回调内调用时直接执行清理，
+ * @details 未启动时返回 -NETMGRERR_STATE。在事件回调内调用时直接执行清理，
  *          由管理线程在返回后自行退出，不阻塞
- * @return 0 成功；负值为 NETM_ERR_* 或 sys 层错误码
+ * @return 0 成功；负值为 NETMGRERR_*
  */
 int netm_stop(void);
 
@@ -299,7 +299,7 @@ int netm_stop(void);
  * @details 只读快照副本，不排队、不阻塞，可在任意线程高频调用
  * @param type 链路类型
  * @param out  输出快照，不可为空
- * @return 0 成功；负值为 NETM_ERR_* 错误码
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netm_link_get(NET_M_TYPE type, NET_M_LINK* out);
 
@@ -307,14 +307,14 @@ int netm_link_get(NET_M_TYPE type, NET_M_LINK* out);
  * @brief 查询全部链路的状态快照
  * @param list 输出数组，不可为空，容量由 *num 传入
  * @param num  不可为空，入参为数组容量，出参为实际写入条数
- * @return 0 成功；负值为 NETM_ERR_* 错误码
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netm_link_list(NET_M_LINK* list, int* num);
 
 /**
  * @brief 读取当前承载默认流量的主链路
  * @param type 输出主链路类型，不可为空；无主链路时输出 NET_M_TYPE_MAX
- * @return 0 成功；负值为 NETM_ERR_* 错误码
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netm_active_get(NET_M_TYPE* type);
 
@@ -322,7 +322,7 @@ int netm_active_get(NET_M_TYPE* type);
  * @brief 读取指定链路的当前优先级
  * @param type 链路类型
  * @param prio 输出优先级，不可为空
- * @return 0 成功；负值为 NETM_ERR_* 错误码
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netm_prio_get(NET_M_TYPE type, unsigned char* prio);
 
@@ -330,11 +330,11 @@ int netm_prio_get(NET_M_TYPE type, unsigned char* prio);
 
 /**
  * @brief 修改指定链路的优先级，并立即重跑一轮仲裁
- * @details 与当前其它启用链路优先级冲突时返回 -NETM_ERR_PRIO 且不修改；
+ * @details 与当前其它启用链路优先级冲突时返回 -NETMGRERR_PRIO 且不修改；
  *          修改成功后主链路改选通过 SWITCH 事件体现
  * @param type 链路类型
  * @param prio 新优先级（0-255，小者优先）
- * @return 0 成功；负值为 NETM_ERR_* 错误码
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netm_prio_set(NET_M_TYPE type, unsigned char prio);
 
@@ -342,7 +342,7 @@ int netm_prio_set(NET_M_TYPE type, unsigned char prio);
  * @brief 预检查优先级是否可用（不修改任何状态）
  * @param type 链路类型
  * @param prio 待检查的优先级
- * @return 0 可用；-NETM_ERR_PRIO 与其它启用链路冲突；其余负值为 NETM_ERR_* 错误码
+ * @return 0 可用；-NETMGRERR_PRIO 与其它启用链路冲突；其余负值为 NETMGRERR_* 错误码
  */
 int netm_prio_check(NET_M_TYPE type, unsigned char prio);
 
@@ -353,35 +353,35 @@ int netm_prio_check(NET_M_TYPE type, unsigned char prio);
  *          缓存配置重建」，不会叠开第二个链路实例
  * @param type 链路类型
  * @param on   1=启用，0=关闭（非 0 一律按 1 处理）
- * @return 0 成功；负值为 NETM_ERR_* 或 sys 层错误码
+ * @return 0 成功；负值为 NETMGRERR_*
  */
 int netm_link_enable(NET_M_TYPE type, int on);
 
 /**
  * @brief 重新配置以太网链路（先关闭再按新配置拉起）
  * @param conf 以太网配置，不可为空
- * @return 0 成功；负值为 NETM_ERR_* 或 sys 层错误码
+ * @return 0 成功；负值为 NETMGRERR_*
  */
 int netm_eth_set(const NET_M_ETH_CONF* conf);
 
 /**
  * @brief 重新配置 WiFi 链路（STA 换热点 / AP 重载均走此接口）
  * @param conf WiFi 配置，不可为空；STA 模式 candNum 必须大于 0
- * @return 0 成功；负值为 NETM_ERR_* 或 sys 层错误码
+ * @return 0 成功；负值为 NETMGRERR_*
  */
 int netm_wifi_set(const NET_M_WIFI_CONF* conf);
 
 /**
  * @brief 重新配置 4G 链路
  * @param conf 4G 配置，不可为空
- * @return 0 成功；负值为 NETM_ERR_* 或 sys 层错误码（PPP / QMI 返回 -NETM_ERR_NOTSUP）
+ * @return 0 成功；负值为 NETMGRERR_*（PPP / QMI 返回 -NETMGRERR_NOTSUP）
  */
 int netm_cell_set(const NET_M_CELL_CONF* conf);
 
 /**
  * @brief 下发 DNS 服务器地址（写入系统 DNS 配置并同步内部记录）
  * @param dns 单个 IPv4 地址字符串；为空或空串表示清除已下发的 DNS
- * @return 0 成功；负值为 NETM_ERR_* 或 sys 层错误码
+ * @return 0 成功；负值为 NETMGRERR_*
  */
 int netm_dns_set(const char* dns);
 
@@ -393,7 +393,7 @@ int netm_dns_set(const char* dns);
  *          无论成功与否都会上报 NET_M_EV_WIFI_SCAN_DONE；超过 *num 容量的条目被丢弃
  * @param list 输出数组，不可为空
  * @param num  不可为空，入参为数组容量，出参为实际写入条数（失败时为 0）
- * @return 0 扫描完成；-NETM_ERR_TIMEOUT 超时；其余负值为 NETM_ERR_* 错误码
+ * @return 0 扫描完成；-NETMGRERR_TIMEOUT 超时；其余负值为 NETMGRERR_* 错误码
  */
 int netm_wifi_scan(NET_M_WIFI_AP* list, int* num);
 
@@ -401,14 +401,14 @@ int netm_wifi_scan(NET_M_WIFI_AP* list, int* num);
  * @brief 读取最近一次扫描结果（与最近一次 netm_wifi_scan 返回内容一致）
  * @param list 输出数组，不可为空，容量由 *num 传入
  * @param num  不可为空，入参为数组容量，出参为实际条数
- * @return 0 成功；负值为 NETM_ERR_* 错误码
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netm_wifi_scan_result(NET_M_WIFI_AP* list, int* num);
 
 /**
  * @brief 读取 WiFi 当前连接信息
  * @param info 输出连接信息，不可为空；未连接时 connected=0
- * @return 0 成功；负值为 NETM_ERR_* 错误码
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netm_wifi_status(NET_M_WIFI_INFO* info);
 

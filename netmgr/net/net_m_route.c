@@ -7,7 +7,7 @@
  */
 #include "net_m_ctx.h"
 
-#include "net_m_err.h"
+#include "net_mgr_err.h"
 #include "net_mgr_route.h"
 
 #include <stdio.h>
@@ -24,7 +24,7 @@ int net_m_route_revoke(NET_M_LINK_RT* link)
 
     if (NULL == link)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     if (0 == link->route_on)
     {
@@ -61,7 +61,7 @@ int net_m_route_sync(NET_M_LINK_RT* link)
 
     if (NULL == link)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     need = (NET_M_ST_READY == link->state && '\0' != link->gate[0]) ? 1 : 0;

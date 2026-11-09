@@ -12,7 +12,6 @@
  */
 #include "net_m_ctx.h"
 
-#include "net_m_err.h"
 #include "net_mgr_ap.h"
 #include "net_mgr_dhcp.h"
 #include "net_mgr_err.h"
@@ -62,21 +61,21 @@ const NET_M_OPS net_m_wifi_ops = {wifi_open, wifi_close, wifi_refresh, wifi_heal
 /**
  * @brief 校验单个候选热点
  * @param cand 候选配置，不可为空
- * @return 0 合法；-NETM_ERR_CONF 非法
+ * @return 0 合法；-NETMGRERR_CONF 非法
  */
 static int cand_check(const NET_M_WIFI_CAND* cand)
 {
     if (NULL == cand)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     if ('\0' == cand->ssid[0])
     {
-        return -NETM_ERR_CONF;
+        return -NETMGRERR_CONF;
     }
     if ('\0' != cand->passwd[0] && (int)strlen(cand->passwd) < NET_M_PSK_MIN)
     {
-        return -NETM_ERR_CONF;
+        return -NETMGRERR_CONF;
     }
     return 0;
 }
@@ -198,7 +197,7 @@ static int cand_connect(NET_M_WIFI_PRIV* priv, const int* order, int count)
 {
     NET_M_WIFI_CAND* cand = NULL; /* 候选配置 */
     int idx = 0;                  /* 候选下标 */
-    int ret = -NETM_ERR_CONF;     /* 最近一次失败码 */
+    int ret = -NETMGRERR_CONF;     /* 最近一次失败码 */
     int i = 0;                    /* 顺序表下标，从 0 开始 */
 
     for (i = 0; i < count; ++i)
@@ -416,11 +415,11 @@ static int conf_check(const NET_M_WIFI_CONF* conf)
     {
         if ('\0' == conf->apSsid[0])
         {
-            return -NETM_ERR_CONF;
+            return -NETMGRERR_CONF;
         }
         if ('\0' != conf->apPasswd[0] && (int)strlen(conf->apPasswd) < NET_M_PSK_MIN)
         {
-            return -NETM_ERR_CONF;
+            return -NETMGRERR_CONF;
         }
         return 0;
     }
@@ -428,13 +427,13 @@ static int conf_check(const NET_M_WIFI_CONF* conf)
     /* STA：至少 1 个候选，且逐个校验 */
     if (conf->candNum <= 0 || conf->candNum > NET_M_CAND_MAX)
     {
-        return -NETM_ERR_CONF;
+        return -NETMGRERR_CONF;
     }
     for (i = 0; i < conf->candNum; ++i)
     {
         if (0 != cand_check(&conf->cand[i]))
         {
-            return -NETM_ERR_CONF;
+            return -NETMGRERR_CONF;
         }
     }
 
@@ -444,7 +443,7 @@ static int conf_check(const NET_M_WIFI_CONF* conf)
         if (!netmgr_ip_valid(conf->ip) || !netmgr_ip_valid(conf->mask) ||
             !netmgr_ip_valid(conf->gate))
         {
-            return -NETM_ERR_CONF;
+            return -NETMGRERR_CONF;
         }
     }
 
@@ -453,7 +452,7 @@ static int conf_check(const NET_M_WIFI_CONF* conf)
     {
         if (strlen(conf->cand[i].ssid) >= sizeof(conf->cand[i].ssid))
         {
-            return -NETM_ERR_CONF;
+            return -NETMGRERR_CONF;
         }
     }
     return 0;
@@ -467,7 +466,7 @@ static int wifi_open(NET_M_LINK_RT* link, const void* conf)
 
     if (NULL == link || NULL == cfg)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     ret = conf_check(cfg);
@@ -479,7 +478,7 @@ static int wifi_open(NET_M_LINK_RT* link, const void* conf)
     priv = (NET_M_WIFI_PRIV*)calloc(1, sizeof(NET_M_WIFI_PRIV));
     if (NULL == priv)
     {
-        return -NETM_ERR_MEM;
+        return -NETMGRERR_MEM;
     }
     memcpy(&priv->conf, cfg, sizeof(priv->conf));
     priv->head.type = NET_M_WIFI;
@@ -495,7 +494,7 @@ static int wifi_open(NET_M_LINK_RT* link, const void* conf)
     if (!netmgr_ip_valid(priv->conf.apIp) || !netmgr_ip_valid(priv->conf.apMask))
     {
         free(priv);
-        return -NETM_ERR_CONF;
+        return -NETMGRERR_CONF;
     }
 
     /* 按模式分派；失败时回收本层资源，避免半成品上下文 */
@@ -529,7 +528,7 @@ static int wifi_close(NET_M_LINK_RT* link)
 
     if (NULL == link)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     /* 停止取址失败不阻断资源释放，错误码在末尾上抛 */
@@ -637,7 +636,7 @@ static int wifi_refresh(NET_M_LINK_RT* link)
 
     if (NULL == link || NULL == link->priv)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     priv = (NET_M_WIFI_PRIV*)link->priv;
 
@@ -669,7 +668,7 @@ static int wifi_heal(NET_M_LINK_RT* link)
 
     if (NULL == link || NULL == link->priv)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     priv = (NET_M_WIFI_PRIV*)link->priv;
 

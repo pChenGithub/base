@@ -12,7 +12,6 @@
  */
 #include "net_m_ctx.h"
 
-#include "net_m_err.h"
 #include "net_mgr_dns.h"
 #include "net_mgr_err.h"
 #include "net_mgr_event.h"
@@ -360,7 +359,7 @@ static int core_link_reset(NET_M_TYPE type, const void* conf, int enable, unsign
     {
         link->enable = 0;
         link->state = NET_M_ST_DISABLED;
-        return (0 != err) ? err : -NETM_ERR_CONF;
+        return (0 != err) ? err : -NETMGRERR_CONF;
     }
 
     ret = g_mgr.ops[type]->open(link, conf);
@@ -432,7 +431,7 @@ static int core_conf_check(const NET_M_CONF* conf)
 
     if (0 == want)
     {
-        return -NETM_ERR_CONF;
+        return -NETMGRERR_CONF;
     }
 
     for (i = 0; i < used; ++i)
@@ -441,7 +440,7 @@ static int core_conf_check(const NET_M_CONF* conf)
         {
             if (prio[i] == prio[j])
             {
-                return -NETM_ERR_PRIO;
+                return -NETMGRERR_PRIO;
             }
         }
     }
@@ -802,7 +801,7 @@ static int core_do_start(void)
                 (void)core_link_reset((NET_M_TYPE)i, NULL, 0, 0);
             }
         }
-        return (0 != err) ? err : -NETM_ERR_CONF;
+        return (0 != err) ? err : -NETMGRERR_CONF;
     }
 
     core_drive();
@@ -868,7 +867,7 @@ static int core_do_set(NET_M_TYPE type, const void* conf)
 
     if (NULL == conf || (int)type < 0 || (int)type >= NET_M_TYPE_MAX)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     switch (type)
@@ -921,7 +920,7 @@ static int core_do_enable(NET_M_TYPE type, int on)
 
     if ((int)type < 0 || (int)type >= NET_M_TYPE_MAX)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     conf = core_conf_of(type, &cacheEnable);
@@ -932,7 +931,7 @@ static int core_do_enable(NET_M_TYPE type, int on)
         /* 启用前先确认不会出现同 metric 双默认路由 */
         if (0 != core_prio_conflict(type, prio))
         {
-            return -NETM_ERR_PRIO;
+            return -NETMGRERR_PRIO;
         }
         ret = core_link_reset(type, conf, 1, prio);
     }
@@ -950,17 +949,17 @@ static int core_do_enable(NET_M_TYPE type, int on)
  * @param type  链路类型
  * @param prio  目标优先级
  * @param apply 1=实际修改并仲裁；0=仅检查冲突
- * @return 0 可设置/已设置；-NETM_ERR_PRIO 冲突；其余负值为错误码
+ * @return 0 可设置/已设置；-NETMGRERR_PRIO 冲突；其余负值为错误码
  */
 static int core_do_prio(NET_M_TYPE type, unsigned char prio, int apply)
 {
     if ((int)type < 0 || (int)type >= NET_M_TYPE_MAX)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     if (0 != core_prio_conflict(type, prio))
     {
-        return -NETM_ERR_PRIO;
+        return -NETMGRERR_PRIO;
     }
     if (0 == apply)
     {
@@ -1045,7 +1044,7 @@ static int core_exec(NET_M_CMD* cmd)
 {
     if (NULL == cmd)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     switch (cmd->type)
@@ -1071,7 +1070,7 @@ static int core_exec(NET_M_CMD* cmd)
     case NET_M_CMD_SCAN:
         return core_do_scan(cmd->arg.scan.list, cmd->arg.scan.num);
     default:
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 }
 
@@ -1080,20 +1079,20 @@ static int core_exec(NET_M_CMD* cmd)
 /**
  * @brief 命令入队
  * @param cmd 命令，不可为空
- * @return 0 成功；-NETM_ERR_STATE 未启动
+ * @return 0 成功；-NETMGRERR_STATE 未启动
  */
 static int core_post(NET_M_CMD* cmd)
 {
     if (NULL == cmd)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     pthread_mutex_lock(&g_mgr.lock);
     if (0 == g_mgr.started)
     {
         pthread_mutex_unlock(&g_mgr.lock);
-        return -NETM_ERR_STATE;
+        return -NETMGRERR_STATE;
     }
 
     cmd->next = NULL;
@@ -1231,7 +1230,7 @@ static void* core_thread(void* arg)
 /**
  * @brief 初始化命令队列条件变量（仅首次启动执行）
  * @details 绑定 CLOCK_MONOTONIC：系统时间跳变不影响等待与节拍
- * @return 0 成功；-NETM_ERR_THREAD 初始化失败
+ * @return 0 成功；-NETMGRERR_THREAD 初始化失败
  */
 static int core_cond_init(void)
 {
@@ -1252,7 +1251,7 @@ static int core_cond_init(void)
     (void)pthread_condattr_destroy(&attr);
     if (0 != ret)
     {
-        return -NETM_ERR_THREAD;
+        return -NETMGRERR_THREAD;
     }
 
     g_mgr.condInited = 1;
@@ -1277,7 +1276,7 @@ static int core_boot(void)
     if (0 != pthread_create(&g_mgr.tid, NULL, core_thread, NULL))
     {
         (void)netmgr_event_close();
-        return -NETM_ERR_THREAD;
+        return -NETMGRERR_THREAD;
     }
     return 0;
 }
@@ -1306,7 +1305,7 @@ int netm_start(const NET_M_CONF* conf, net_m_event_cb cb, void* user)
 
     if (NULL == conf)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     ret = core_conf_check(conf);
@@ -1319,7 +1318,7 @@ int netm_start(const NET_M_CONF* conf, net_m_event_cb cb, void* user)
     if (0 != g_mgr.started)
     {
         pthread_mutex_unlock(&g_mgr.lock);
-        return -NETM_ERR_STATE;
+        return -NETMGRERR_STATE;
     }
 
     /* 占位：并发 start 由 started 标志互斥，后续失败路径负责复位 */
@@ -1386,7 +1385,7 @@ int netm_stop(void)
     pthread_mutex_unlock(&g_mgr.lock);
     if (0 == started)
     {
-        return -NETM_ERR_STATE;
+        return -NETMGRERR_STATE;
     }
 
     cmd.type = NET_M_CMD_STOP;
@@ -1401,7 +1400,7 @@ int netm_link_get(NET_M_TYPE type, NET_M_LINK* out)
 {
     if ((int)type < 0 || (int)type >= NET_M_TYPE_MAX || NULL == out)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     pthread_mutex_lock(&g_mgr.lock);
@@ -1418,7 +1417,7 @@ int netm_link_list(NET_M_LINK* list, int* num)
 
     if (NULL == list || NULL == num || *num <= 0)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     cap = *num;
 
@@ -1440,7 +1439,7 @@ int netm_active_get(NET_M_TYPE* type)
 
     if (NULL == type)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     pthread_mutex_lock(&g_mgr.lock);
@@ -1455,7 +1454,7 @@ int netm_prio_get(NET_M_TYPE type, unsigned char* prio)
 {
     if ((int)type < 0 || (int)type >= NET_M_TYPE_MAX || NULL == prio)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     pthread_mutex_lock(&g_mgr.lock);
@@ -1468,7 +1467,7 @@ int netm_wifi_status(NET_M_WIFI_INFO* info)
 {
     if (NULL == info)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     pthread_mutex_lock(&g_mgr.lock);
@@ -1485,7 +1484,7 @@ int netm_wifi_scan_result(NET_M_WIFI_AP* list, int* num)
 
     if (NULL == list || NULL == num || *num <= 0)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
     cap = *num;
 
@@ -1509,7 +1508,7 @@ int netm_prio_set(NET_M_TYPE type, unsigned char prio)
 
     if ((int)type < 0 || (int)type >= NET_M_TYPE_MAX)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_PRIO_SET;
@@ -1524,7 +1523,7 @@ int netm_prio_check(NET_M_TYPE type, unsigned char prio)
 
     if ((int)type < 0 || (int)type >= NET_M_TYPE_MAX)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_PRIO_CHECK;
@@ -1539,7 +1538,7 @@ int netm_link_enable(NET_M_TYPE type, int on)
 
     if ((int)type < 0 || (int)type >= NET_M_TYPE_MAX)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_ENABLE;
@@ -1554,7 +1553,7 @@ int netm_eth_set(const NET_M_ETH_CONF* conf)
 
     if (NULL == conf)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_SET_ETH;
@@ -1568,7 +1567,7 @@ int netm_wifi_set(const NET_M_WIFI_CONF* conf)
 
     if (NULL == conf)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_SET_WIFI;
@@ -1582,7 +1581,7 @@ int netm_cell_set(const NET_M_CELL_CONF* conf)
 
     if (NULL == conf)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_SET_CELL;
@@ -1596,7 +1595,7 @@ int netm_dns_set(const char* dns)
 
     if (NULL != dns && '\0' != dns[0] && !netmgr_ip_valid(dns))
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_DNS;
@@ -1610,7 +1609,7 @@ int netm_wifi_scan(NET_M_WIFI_AP* list, int* num)
 
     if (NULL == list || NULL == num || *num <= 0)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     cmd.type = NET_M_CMD_SCAN;

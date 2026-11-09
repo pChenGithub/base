@@ -129,7 +129,7 @@ extern const NET_M_OPS net_m_cell_ops;
 
 /**
  * @brief 按「物理连通 + 已取地址 + 路由表有默认网关」判定 DHCP 链路就绪
- * @details 未就绪时状态置为 DOWN；接口不存在时置 DOWN 并写 -NETM_ERR_NOTFOUND 到 err
+ * @details 未就绪时状态置为 DOWN；接口不存在时置 DOWN 并写 -NETMGRERR_NOTFOUND 到 err
  * @param link 链路运行时上下文，不可为空
  * @return 0 成功（未就绪亦为 0）；负值为错误码
  */

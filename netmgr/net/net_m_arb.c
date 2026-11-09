@@ -10,7 +10,7 @@
  */
 #include "net_m_ctx.h"
 
-#include "net_m_err.h"
+#include "net_mgr_err.h"
 #include "net_mgr_dns.h"
 
 #include <stdio.h>
@@ -388,7 +388,7 @@ int net_m_arb_run(NET_M_ARB* arb, NET_M_LINK_RT* links, const NET_M_OPS* const o
     if (NULL == arb || NULL == links || NULL == ops || NULL == evs || NULL == num ||
         max <= 0)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     *num = 0;

@@ -6,7 +6,6 @@
  */
 #include "net_m_ctx.h"
 
-#include "net_m_err.h"
 #include "net_mgr_err.h"
 #include "net_mgr_iface.h"
 #include "net_mgr_route.h"
@@ -62,7 +61,7 @@ int net_m_link_ready(NET_M_LINK_RT* link)
 
     if (NULL == link)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     ret = link_probe(link);
@@ -94,7 +93,7 @@ int net_m_link_ready_static(NET_M_LINK_RT* link, const char* gate)
 
     if (NULL == link || NULL == gate)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     ret = link_probe(link);
@@ -161,7 +160,7 @@ int net_m_link_ready_dhcp(NET_M_LINK_RT* link)
 
     if (NULL == link)
     {
-        return -NETM_ERR_PARAM;
+        return -NETMGRERR_PARAM;
     }
 
     /* 接口已消失（USB 网卡拔出、驱动卸载）：直接判 DOWN 并给出原因 */
