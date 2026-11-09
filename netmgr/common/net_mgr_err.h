@@ -42,6 +42,10 @@ extern "C" {
 #define NETMGRERR_TIMEOUT   213
 /** 动态内存申请失败 */
 #define NETMGRERR_MEM       214
+/** 优先级冲突（已启用链路之间优先级重复） */
+#define NETMGRERR_PRIO      215
+/** 该能力在当前构建中未实现（预留：PPP / QMI 拨号） */
+#define NETMGRERR_NOTSUP    216
 
 #ifdef __cplusplus
 }
