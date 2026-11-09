@@ -26,8 +26,6 @@
 extern "C" {
 #endif
 
-#include "net_mgr_limits.h"
-
 /** DHCP 取址状态 */
 typedef enum {
     NETMGR_DHCP_RUNNING = 0, /**< 会话已建立，正在取址 */
@@ -39,7 +37,7 @@ typedef enum {
 
 /** DHCP 租约信息，供业务做租期告警与链路决策 */
 typedef struct {
-    char ip[NETMGR_IP_LEN]; /**< 租约地址，无租约时为空串 */
+    char ip[16];            /**< 租约地址，无租约时为空串 */
     int leaseSec;           /**< 租约时长（秒），未知为 0 */
     int remainSec;          /**< 查询时刻的剩余租期（秒），无租约、租期未知或已过期为 0 */
     int valid;              /**< 1=当前持有租约（租期未知时按持有处理，过期置 0） */

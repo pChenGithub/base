@@ -20,8 +20,6 @@
 extern "C" {
 #endif
 
-#include "net_mgr_limits.h"
-
 /** 订阅组掩码：0 表示使用默认组（链路 + IPv4 地址 + IPv4 路由） */
 #define NETMGR_EVENT_GROUPS_DEFAULT  0u
 
@@ -44,15 +42,15 @@ typedef enum {
 
 /** IPv4 地址事件载荷：NETMGR_NEV_ADDR_ADD / ADDR_DEL */
 typedef struct {
-    char ip[NETMGR_IP_LEN];   /**< 地址（IFA_LOCAL 优先） */
-    char mask[NETMGR_IP_LEN]; /**< 由前缀长度换算的掩码 */
+    char ip[16];   /**< 地址（IFA_LOCAL 优先） */
+    char mask[16]; /**< 由前缀长度换算的掩码 */
 } NETMGR_NEVP_ADDR;
 
 /** 路由事件载荷：NETMGR_NEV_ROUTE_ADD / ROUTE_DEL */
 typedef struct {
     int metric;               /**< 路由 metric（RTA_PRIORITY），无该属性为 0 */
     int isDefault;            /**< 1=主表默认路由（RT_TABLE_MAIN 且目的前缀长度为 0） */
-    char gate[NETMGR_IP_LEN]; /**< 下一跳网关（RTA_GATEWAY），直连路由为空串 */
+    char gate[16];            /**< 下一跳网关（RTA_GATEWAY），直连路由为空串 */
 } NETMGR_NEVP_ROUTE;
 
 /**
@@ -65,7 +63,7 @@ typedef struct {
  */
 typedef struct {
     NETMGR_NEV_TYPE type;       /**< 事件类别（判别符） */
-    char ifname[NETMGR_IF_LEN]; /**< 相关接口名，无法解析时为空串（LOST 与多路径路由可能为空） */
+    char ifname[16];            /**< 相关接口名，无法解析时为空串（LOST 与多路径路由可能为空） */
     union {
         NETMGR_NEVP_ADDR  addr;  /**< 地址事件载荷 */
         NETMGR_NEVP_ROUTE route; /**< 路由事件载荷 */

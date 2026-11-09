@@ -147,7 +147,7 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
     struct rtmsg* rtm = NULL;         /* 路由消息体 */
     struct rtattr* rta = NULL;        /* 属性视图 */
     struct in_addr gw = {0};          /* 网关地址 */
-    char ifname[NETMGR_IF_LEN] = {0}; /* 出口接口名 */
+    char ifname[16] = {0};            /* 出口接口名 */
     int rta_len = 0;                  /* 剩余属性长度 */
     int metric = 0;                   /* 路由 metric */
     int oif = 0;                      /* 出口接口索引 */

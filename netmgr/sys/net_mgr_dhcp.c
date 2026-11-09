@@ -16,7 +16,6 @@
 #include "net_mgr_dhcp.h"
 
 #include "net_mgr_err.h"
-#include "net_mgr_limits.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,10 +49,10 @@ typedef struct {
     netmgr_dhcp_cb hand;        /**< 取址状态回调 */
     void* user;                 /**< 回调透传的用户指针，可为空 */
     volatile int stopReq;       /**< 1=已请求停止，线程不再回调取址结果 */
-    char ifname[NETMGR_IF_LEN]; /**< 接口名 */
+    char ifname[16];            /**< 接口名 */
     char cmdstr[CMDSTR_LEN];    /**< 执行命令 */
     char pidfile[CMDSTR_LEN];   /**< udhcpc pidfile 路径，停止时按此精确定位进程 */
-    char leaseIp[NETMGR_IP_LEN];/**< 最近一次租约地址，无租约为空串 */
+    char leaseIp[16];           /**< 最近一次租约地址，无租约为空串 */
     int leaseSec;               /**< 最近一次租约时长（秒），未知为 0 */
     time_t leaseAt;             /**< 租约获取时刻，0 表示当前无租约 */
 } NETMGR_DHCP;
@@ -204,7 +203,7 @@ static int dhcp_session(NETMGR_DHCP* item, int* gotLease)
 {
     FILE* fp = NULL;                  /* 管道流 */
     char line[RETSTR_BUFF_LEN] = {0}; /* 单行输出缓冲 */
-    char ip[NETMGR_IP_LEN] = {0};     /* 解析出的租约地址 */
+    char ip[16] = {0};                /* 解析出的租约地址 */
     time_t begin = 0;                 /* 本轮取址计时起点 */
     int leaseSec = 0;                 /* 解析出的租约时长 */
     int succ = 0;                     /* 1=当前处于持有租约状态 */

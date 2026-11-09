@@ -68,7 +68,7 @@
 /** wpa 控制通道上下文（进程内单实例） */
 typedef struct {
     int sock;                   /**< 控制 socket，-1 表示未打开 */
-    char ifname[NETMGR_IF_LEN]; /**< 当前绑定的接口名 */
+    char ifname[16];            /**< 当前绑定的接口名 */
     pthread_mutex_t lock;       /**< 命令收发互斥锁，保证一问一答不交叉 */
 } NETMGR_WPA;
 
@@ -243,7 +243,7 @@ static int wpa_rsp(int fd, const char* cmd, char* buf, int len)
  */
 static int wpa_reconnect(void)
 {
-    char ifname[NETMGR_IF_LEN] = {0}; /* 重连使用的接口名 */
+    char ifname[16] = {0}; /* 重连使用的接口名 */
 
     pthread_mutex_lock(&g_wpa.lock);
     if (g_wpa.sock < 0 || '\0' == g_wpa.ifname[0])
@@ -1173,7 +1173,7 @@ int netmgr_wpa_event_open(netmgr_wev_cb cb, void* user)
 {
     struct sockaddr_un addr = {0}; /* 事件监听地址 */
     struct timeval tv = {0};       /* 接收超时，供回环检查运行标志 */
-    char ifname[NETMGR_IF_LEN] = {0}; /* 当前绑定接口名 */
+    char ifname[16] = {0}; /* 当前绑定接口名 */
     char path[WPA_PATH_LEN] = {0};    /* 事件监听路径 */
     char buf[WPA_BUF_LEN] = {0};      /* ATTACH 回复 */
     int fd = -1;                   /* 事件监听 socket */

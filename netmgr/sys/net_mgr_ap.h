@@ -20,18 +20,16 @@
 extern "C" {
 #endif
 
-#include "net_mgr_limits.h"
-
 /** AP 模式配置：本层只关心 AP 侧所需字段 */
 typedef struct {
-    char ifname[NETMGR_IF_LEN];   /**< 承载 AP 的接口名，不可为空 */
+    char ifname[16];              /**< 承载 AP 的接口名，不可为空 */
     char ssid[64];                /**< 热点 SSID，不可为空 */
     char passwd[64];              /**< 口令，空串表示开放 AP */
-    char ap_ip[NETMGR_IP_LEN];    /**< AP 本机地址（hostapd/udhcpd 的 router 选项） */
-    char ap_mask[NETMGR_IP_LEN];  /**< AP 子网掩码 */
-    char ap_start[NETMGR_IP_LEN]; /**< DHCP 地址池起始地址 */
-    char ap_end[NETMGR_IP_LEN];   /**< DHCP 地址池结束地址 */
-    char dns[NETMGR_IP_LEN];      /**< 下发给客户端的 DNS，空则不写该选项 */
+    char ap_ip[16];               /**< AP 本机地址（hostapd/udhcpd 的 router 选项） */
+    char ap_mask[16];             /**< AP 子网掩码 */
+    char ap_start[16];            /**< DHCP 地址池起始地址 */
+    char ap_end[16];              /**< DHCP 地址池结束地址 */
+    char dns[16];                 /**< 下发给客户端的 DNS，空则不写该选项 */
 } NETMGR_APCONF;
 
 /* ===== 操作 ===== */

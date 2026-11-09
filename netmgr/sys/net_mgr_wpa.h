@@ -28,8 +28,6 @@
 extern "C" {
 #endif
 
-#include "net_mgr_limits.h"
-
 /** SSID 最大长度（含结束符） */
 #define NETMGR_SSID_LEN   64
 /** BSSID 文本长度（xx:xx:xx:xx:xx:xx 含结束符） */
