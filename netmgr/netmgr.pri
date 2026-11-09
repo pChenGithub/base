@@ -70,5 +70,23 @@ equals(NETMGR_WITH_API, 1) {
     INCLUDEPATH += $$PWD/api
 }
 
+# ===== net 层：新一代网络管理（单线程消息循环 + 唯一所有者线程） =====
+# 与 core 层并存验证期使用；宿主工程只能初始化其中一套（两套都会改内核默认路由）。
+# 用法：DEFINES += NETMGR_WITH_NET=1（或直接 -DNETMGR_WITH_NET），对外头为 net_m_def.h
+# 完成迁移后移除 core / api 两段即可，net 层不依赖它们
+equals(NETMGR_WITH_NET, 1) {
+    SOURCES += $$PWD/net/net_m_core.c \
+        $$PWD/net/net_m_arb.c \
+        $$PWD/net/net_m_route.c \
+        $$PWD/net/net_m_link.c \
+        $$PWD/net/net_m_eth.c \
+        $$PWD/net/net_m_wifi.c \
+        $$PWD/net/net_m_cell.c
+    HEADERS += $$PWD/net/net_m_def.h \
+        $$PWD/net/net_m_err.h \
+        $$PWD/net/net_m_ctx.h
+    INCLUDEPATH += $$PWD/net
+}
+
 unix:!macx: LIBS += -lpthread
 }
