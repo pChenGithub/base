@@ -54,12 +54,32 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric);
 
 /**
  * @brief 删除默认路由（精确匹配接口、网关与 metric）
+ * @details 目标路由本就不存在时返回成功（幂等）
  * @param ifname 出口接口名，不可为空
  * @param gate   网关地址，不可为空
  * @param metric 路由 metric
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
 int netmgr_route_del(const char* ifname, const char* gate, int metric);
+
+/**
+ * @brief 设为系统默认网关（不带 metric，替换现有默认网关）
+ * @details 主路由表中不带 metric 的默认路由只有一条，因此对已有默认网关是替换语义；
+ *          高优先级链路用它抢占默认网关，低优先级链路仍用 netmgr_route_add 带 metric 共存
+ * @param ifname 出口接口名，不可为空
+ * @param gate   网关地址，不可为空
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_route_set_default(const char* ifname, const char* gate);
+
+/**
+ * @brief 删除系统默认网关（不带 metric 的那条默认路由）
+ * @details 主链路降级为备份链路时调用，撤掉此前替换上去的默认网关
+ * @param ifname 出口接口名，不可为空
+ * @param gate   网关地址，不可为空
+ * @return 0 成功（路由已不存在亦为成功）；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_route_del_default(const char* ifname, const char* gate);
 
 #ifdef __cplusplus
 }

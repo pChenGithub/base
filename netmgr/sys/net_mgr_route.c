@@ -91,11 +91,12 @@ static int route_attr(struct nlmsghdr* nlh, int type, const void* data, int len,
 
 /**
  * @brief 发送路由请求并等待内核确认
- * @param fd  netlink socket
- * @param nlh 请求消息，不可为空
+ * @param fd      netlink socket
+ * @param nlh     请求消息，不可为空
+ * @param lenient 1=删除类请求，ENOENT（路由已不存在）视为成功
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-static int route_send(int fd, struct nlmsghdr* nlh)
+static int route_send(int fd, struct nlmsghdr* nlh, int lenient)
 {
     struct sockaddr_nl addr = {0};   /* 内核 netlink 地址 */
     struct nlmsghdr* msg = NULL;     /* 回复消息视图 */
@@ -128,6 +129,9 @@ static int route_send(int fd, struct nlmsghdr* nlh)
             continue;
         err = (struct nlmsgerr*)NLMSG_DATA(msg);
         if (0 == err->error)
+            return 0;
+        /* 幂等删除：目标路由本就不存在，视为已达成，避免切换过程中误报失败 */
+        if (0 != lenient && -ENOENT == err->error)
             return 0;
         errno = -err->error;
         return -NETMGRERR_ROUTE;
@@ -282,13 +286,19 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
 }
 
 /**
- * @brief 下发默认路由（带 metric）
- * @param ifname 出口接口名，不可为空
- * @param gate   网关地址，不可为空
- * @param metric 路由 metric，越小越优先
+ * @brief 构造并发送一条默认路由请求（新增/设为默认/删除共用）
+ * @details RTA_PRIORITY 决定路由形态：
+ *          withMetric=1 → 带 metric 的备用默认路由（可与其它链路共存）；
+ *          withMetric=0 → 不带 metric 的系统默认网关（同一 key 下仅一条，替换语义）
+ * @param ifname     出口接口名，不可为空
+ * @param gate       网关地址，不可为空
+ * @param metric     路由 metric（withMetric=0 时忽略）
+ * @param withMetric 1=携带 RTA_PRIORITY，0=不携带
+ * @param del        1=删除，0=新增或替换
  * @return 0 成功；负值为 NETMGRERR_* 错误码
  */
-int netmgr_route_add(const char* ifname, const char* gate, int metric)
+static int route_apply(const char* ifname, const char* gate, int metric,
+                       int withMetric, int del)
 {
     NETMGR_RREQ req = {0};          /* 请求缓冲 */
     struct in_addr gw = {0};        /* 网关地址 */
@@ -309,8 +319,9 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
 
     /* 构造默认路由：dst 长度为 0 即 default，metric 由 RTA_PRIORITY 承载 */
     req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-    req.nlh.nlmsg_type = RTM_NEWROUTE;
-    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK;
+    req.nlh.nlmsg_type = (0 != del) ? RTM_DELROUTE : RTM_NEWROUTE;
+    req.nlh.nlmsg_flags = (0 != del) ? (NLM_F_REQUEST | NLM_F_ACK) :
+                                       (NLM_F_REQUEST | NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK);
     req.nlh.nlmsg_seq = 1;
     req.rtm.rtm_family = AF_INET;
     req.rtm.rtm_table = RT_TABLE_MAIN;
@@ -330,25 +341,50 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
     ret = route_attr(&req.nlh, RTA_OIF, &ifindex, (int)sizeof(ifindex), (int)sizeof(req));
     if (ret < 0)
         return ret;
-    ret = route_attr(&req.nlh, RTA_PRIORITY, &metric, (int)sizeof(metric), (int)sizeof(req));
-    if (ret < 0)
-        return ret;
+    if (0 != withMetric)
+    {
+        ret = route_attr(&req.nlh, RTA_PRIORITY, &metric, (int)sizeof(metric), (int)sizeof(req));
+        if (ret < 0)
+            return ret;
+    }
 
     fd = route_sock_open();
     if (fd < 0)
         return fd;
 
-    ret = route_send(fd, &req.nlh);
+    ret = route_send(fd, &req.nlh, (0 != del) ? 1 : 0);
     close(fd);
-    if (ret < 0)
-    {
-        return ret;
-    }
-    return 0;
+    return ret;
+}
+
+/**
+ * @brief 下发默认路由（带 metric）
+ * @param ifname 出口接口名，不可为空
+ * @param gate   网关地址，不可为空
+ * @param metric 路由 metric，越小越优先
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_route_add(const char* ifname, const char* gate, int metric)
+{
+    return route_apply(ifname, gate, metric, 1, 0);
+}
+
+/**
+ * @brief 设为系统默认网关（不带 metric，替换现有默认网关）
+ * @details 与 netmgr_route_add 的区别：不带 RTA_PRIORITY，主路由表中同一默认目的
+ *          只有一条这样的路由，故对已存在的默认网关是替换语义
+ * @param ifname 出口接口名，不可为空
+ * @param gate   网关地址，不可为空
+ * @return 0 成功；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_route_set_default(const char* ifname, const char* gate)
+{
+    return route_apply(ifname, gate, 0, 0, 0);
 }
 
 /**
  * @brief 删除默认路由（精确匹配接口、网关与 metric）
+ * @details 目标路由本就消失时视为成功（幂等），供链路切换时清理残留使用
  * @param ifname 出口接口名，不可为空
  * @param gate   网关地址，不可为空
  * @param metric 路由 metric
@@ -356,61 +392,19 @@ int netmgr_route_add(const char* ifname, const char* gate, int metric)
  */
 int netmgr_route_del(const char* ifname, const char* gate, int metric)
 {
-    NETMGR_RREQ req = {0};          /* 请求缓冲 */
-    struct in_addr gw = {0};        /* 网关地址 */
-    unsigned int ifindex = 0;       /* 出口接口索引 */
-    int fd = -1;                    /* netlink socket */
-    int ret = 0;                    /* 子步骤返回值 */
+    return route_apply(ifname, gate, metric, 1, 1);
+}
 
-    if (NULL == ifname || NULL == gate || !netmgr_ip_valid(gate) || metric < 0)
-    {
-        return -NETMGRERR_PARAM;
-    }
-
-    ifindex = if_nametoindex(ifname);
-    if (0 == ifindex)
-    {
-        return -NETMGRERR_NOTFOUND;
-    }
-
-    /* 删除时必须带 metric 与网关，否则可能误删其它链路的默认路由 */
-    req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-    req.nlh.nlmsg_type = RTM_DELROUTE;
-    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
-    req.nlh.nlmsg_seq = 1;
-    req.rtm.rtm_family = AF_INET;
-    req.rtm.rtm_table = RT_TABLE_MAIN;
-    req.rtm.rtm_protocol = RTPROT_STATIC;
-    req.rtm.rtm_scope = RT_SCOPE_UNIVERSE;
-    req.rtm.rtm_type = RTN_UNICAST;
-    req.rtm.rtm_dst_len = 0;
-
-    if (1 != inet_pton(AF_INET, gate, &gw))
-    {
-        return -NETMGRERR_PARAM;
-    }
-
-    ret = route_attr(&req.nlh, RTA_GATEWAY, &gw, (int)sizeof(gw), (int)sizeof(req));
-    if (ret < 0)
-        return ret;
-    ret = route_attr(&req.nlh, RTA_OIF, &ifindex, (int)sizeof(ifindex), (int)sizeof(req));
-    if (ret < 0)
-        return ret;
-    ret = route_attr(&req.nlh, RTA_PRIORITY, &metric, (int)sizeof(metric), (int)sizeof(req));
-    if (ret < 0)
-        return ret;
-
-    fd = route_sock_open();
-    if (fd < 0)
-        return fd;
-
-    ret = route_send(fd, &req.nlh);
-    close(fd);
-    if (ret < 0)
-    {
-        return ret;
-    }
-    return 0;
+/**
+ * @brief 删除系统默认网关（不带 metric 的那条默认路由）
+ * @details 用于主链路降级：撤掉"替换默认网关"形成的无 metric 路由
+ * @param ifname 出口接口名，不可为空
+ * @param gate   网关地址，不可为空
+ * @return 0 成功（路由已不存在亦为成功）；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_route_del_default(const char* ifname, const char* gate)
+{
+    return route_apply(ifname, gate, 0, 0, 1);
 }
 
 /**
