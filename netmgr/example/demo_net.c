@@ -31,6 +31,7 @@
  *   T17  r                                   扫描结果读取：netm_wifi_scan_result
  *   T18  i                                   WiFi 连接信息：netm_wifi_status
  *   T19  （空闲无输入，自动）                链路变化检测：netm_link_get 周期对比
+ *   T20  （物理插拔网线，无命令）            载波事件：NET_M_EV_CARRIER_UP / CARRIER_DOWN
  *
  * 系统同效果命令不在此处罗列，一律写在对应 netm_* 调用代码旁边（"系统对照：" 开头），
  * 便于边看代码边执行系统命令核对系统真实状态。
@@ -38,6 +39,8 @@
  * 对比口径：T03/T04/T05 对同一链路应给出相同状态与地址，且与各自标注的系统命令输出一致；
  *          T17 的 r 结果与 T16 的 w 结果应一致；T19 打印的"变化"内容须与事件回调
  *          [event] 的前后值一致；T02 后不再出现事件即为停止成功。
+ *          T20：插拔网线只出 CARR+/CARR-（带 carrier=0/1），地址变化只出 DHCP/INFO，
+ *          两者不再混在一条 UP/DOWN 事件里；插线后取到地址才补一条 UP。
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,6 +194,10 @@ static const char* demo_ev_name(NET_M_EV ev)
         return "FAULT";
     case NET_M_EV_DEGRADED:
         return "DEGRADE";
+    case NET_M_EV_CARRIER_UP:
+        return "CARR+";
+    case NET_M_EV_CARRIER_DOWN:
+        return "CARR-";
     default:
         return "UNKNOWN";
     }
@@ -277,15 +284,22 @@ static int demo_event(const NET_M_EVENT* ev, void* user)
         printf("[event] %-7s type=%s stage=%d code=%d\r\n", demo_ev_name(ev->ev),
                demo_type_name(ev->u.fault.type), (int)ev->u.fault.stage, ev->u.fault.code);
         break;
+    case NET_M_EV_CARRIER_UP:
+    case NET_M_EV_CARRIER_DOWN:
+        /* 网线插拔/载波变化：独立事件，仅说明物理连通，地址信息另行看 INFO/DHCP 事件 */
+        printf("[event] %-6s %-6s ifname=%-6s carrier=%d\r\n", demo_ev_name(ev->ev),
+               demo_type_name(ev->u.link.type), ev->u.link.ifname, ev->u.link.carrier);
+        break;
     case NET_M_EV_UP:
     case NET_M_EV_DOWN:
     case NET_M_EV_ENABLED:
     case NET_M_EV_DISABLED:
         /* 以完整链路快照承载的事件 */
-        printf("[event] %-6s %-6s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u err=%d fault=%d\r\n",
+        printf("[event] %-6s %-6s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u err=%d fault=%d carrier=%d\r\n",
                demo_ev_name(ev->ev), demo_type_name(ev->u.link.type), ev->u.link.ifname,
                ev->u.link.ip, ev->u.link.mask, ev->u.link.gate,
-               (unsigned int)ev->u.link.prio, ev->u.link.err, ev->u.link.fault);
+               (unsigned int)ev->u.link.prio, ev->u.link.err, ev->u.link.fault,
+               ev->u.link.carrier);
         break;
     default:
         /* 防御：库新增事件而示例未接入时显式暴露，避免误按链路载荷解读 */
@@ -390,8 +404,9 @@ static int demo_link_same(const NET_M_LINK* a, const NET_M_LINK* b)
     if (NULL == a || NULL == b)
         return 0;
     return (a->state == b->state && a->prio == b->prio && a->err == b->err &&
-            a->fault == b->fault && 0 == strcmp(a->ip, b->ip) &&
-            0 == strcmp(a->mask, b->mask) && 0 == strcmp(a->gate, b->gate));
+            a->fault == b->fault && a->carrier == b->carrier &&
+            0 == strcmp(a->ip, b->ip) && 0 == strcmp(a->mask, b->mask) &&
+            0 == strcmp(a->gate, b->gate));
 }
 
 /**
@@ -403,9 +418,9 @@ static void demo_print_link(const char* tag, const NET_M_LINK* link)
 {
     if (NULL == tag || NULL == link)
         return;
-    printf("[net] %-6s %-6s %-8s ifname=%-6s ip=%-15s mask=%-15s gate=%-15s prio=%u err=%d fault=%d\r\n",
+    printf("[net] %-6s %-6s %-8s ifname=%-6s carrier=%d ip=%-15s mask=%-15s gate=%-15s prio=%u err=%d fault=%d\r\n",
            tag, demo_type_name(link->type), demo_state_name(link->state), link->ifname,
-           link->ip, link->mask, link->gate,
+           link->carrier, link->ip, link->mask, link->gate,
            (unsigned int)link->prio, link->err, link->fault);
 }
 
@@ -681,7 +696,8 @@ static void demo_cmd_wifi_set(char** av, int n)
     if ('W' == av[0][0])
     {
         /* 测试项 T12：WiFi STA 重配，命令 W <ssid> <passwd>；
-           STA：候选热点列表只保留本次这一个，prio=0 按信号强度择优 */
+           STA：候选热点列表只保留本次这一个，prio=0 按信号强度择优；
+           命令立即返回（只重配并启用），关联与取址由内部自愈按退避完成 */
         conf.mode = NET_M_MODE_STA;
         conf.candNum = 1;
         conf.cand[0].prio = 0;

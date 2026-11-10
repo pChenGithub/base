@@ -34,7 +34,8 @@ typedef enum {
 /** 链路状态；ACTIVE 仅出现在快照中，表示当前承载默认流量的链路 */
 typedef enum {
     NET_M_ST_DISABLED = 0, /**< 未启用：不参与刷新与仲裁 */
-    NET_M_ST_DOWN,         /**< 不可用：已启用但未连通或未取得地址 */
+    NET_M_ST_DOWN,         /**< 不可用：已启用但未连通/未取得地址（WiFi STA 未关联热点亦属此态，
+                                此时 carrier=0 且 err 给出最近一次关联失败原因） */
     NET_M_ST_READY,        /**< 就绪：已取得地址与网关，默认路由已下发 */
     NET_M_ST_ACTIVE        /**< 生效：就绪链路中优先级最高者（快照呈现态） */
 } NET_M_STATE;
@@ -233,7 +234,7 @@ typedef struct {
     char ifname[16];               /**< 接口名，空则使用 wlan0 */
     /* ---- STA 模式：候选热点列表 ---- */
     NET_M_WIFI_CAND cand[4];       /**< 候选热点，按 candNum 有效 */
-    int candNum;                   /**< 有效候选数（0~4）；STA 模式必须大于 0 */
+    int candNum;                   /**< 有效候选数（0~4）；0 表示未配置热点，链路可启用但不连接 */
     int useDhcp;                   /**< STA：1=DHCP 取址，0=静态配置 */
     char ip[16];                   /**< STA 静态 IP（useDhcp=0 时必填） */
     char mask[16];                 /**< STA 静态掩码（useDhcp=0 时必填） */
@@ -373,8 +374,10 @@ int netm_eth_set(const NET_M_ETH_CONF* conf);
 
 /**
  * @brief 重新配置 WiFi 链路（STA 换热点 / AP 重载均走此接口）
- * @param conf WiFi 配置，不可为空；STA 模式 candNum 必须大于 0
+ * @param conf WiFi 配置，不可为空；STA 模式 candNum 可为 0（未配置热点，仅启用接口）
  * @return 0 成功；负值为 NETMGRERR_*
+ * @note 启用成功不代表已连上热点：关联与取址由内部自愈按退避完成，
+ *       期间 NET_M_LINK.state 为 DOWN，关联失败原因见 err
  */
 int netm_wifi_set(const NET_M_WIFI_CONF* conf);
 

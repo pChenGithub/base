@@ -370,6 +370,10 @@ static int core_link_reset(NET_M_TYPE type, const void* conf, int enable, unsign
         link->err = ret; /* 保留失败原因，随快照与 DISABLED 事件上报 */
         return ret;
     }
+
+    /* 首次自愈延后一个退避基数：连接类动作（WiFi 关联每候选最长 10 秒）不在
+       启用命令里同步执行，避免 netm_start / netm_link_enable 被关联超时阻塞 */
+    link->retryAt = core_now_ms() + NET_M_RETRY_BASE_MS;
     return err;
 }
 

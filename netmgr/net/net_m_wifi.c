@@ -48,6 +48,8 @@ typedef struct {
     NET_M_WIFI_CONF conf;   /**< 配置副本，生命周期与链路上下文一致 */
     int activeCand;         /**< 当前使用（或最后尝试）的候选下标，-1 表示未定 */
     int lastOk;             /**< 最近一次连接成功的候选下标，-1 表示无记忆 */
+    int connectErr;         /**< 最近一次关联失败错误码，0 表示无；供刷新投影到 err */
+    int addrStarted;        /**< 1=本次关联后已发起地址配置/DHCP，避免自愈重复拉起 */
 } NET_M_WIFI_PRIV;
 
 static int wifi_open(NET_M_LINK_RT* link, const void* conf);
@@ -329,30 +331,22 @@ static int ap_start(NET_M_WIFI_PRIV* priv, NET_M_LINK_RT* link)
 }
 
 /**
- * @brief STA 模式拉起：择优连接 → 启用接口 → 配置静态地址或发起 DHCP
+ * @brief 关联就绪后按取址方式配置地址（静态下发或发起 DHCP）
+ * @details 由 sta_open（接口已关联）与 wifi_heal（重连成功）共用；
+ *          单次关联只执行一次，用 addrStarted 去重，避免自愈每轮重复拉起会话
  * @param link 链路运行时上下文，不可为空
  * @param priv 私有数据，不可为空
  * @return 0 成功；负值为错误码
  */
-static int sta_open(NET_M_LINK_RT* link, NET_M_WIFI_PRIV* priv)
+static int sta_addr_start(NET_M_LINK_RT* link, NET_M_WIFI_PRIV* priv)
 {
     int ret = 0; /* 子步骤返回值 */
 
-    ret = sta_connect(priv);
-    if (ret < 0)
+    if (0 != priv->addrStarted)
     {
-        return ret;
+        return 0;
     }
-
-    ret = netmgr_iface_enable(priv->conf.ifname, 1);
-    if (ret < 0)
-    {
-        return ret;
-    }
-
-    (void)snprintf(link->ifname, sizeof(link->ifname), "%s", priv->conf.ifname);
-    (void)snprintf(link->dns, sizeof(link->dns), "%s", priv->conf.dns);
-    link->priv = priv;
+    priv->addrStarted = 1;
 
     if (0 == priv->conf.useDhcp)
     {
@@ -371,7 +365,54 @@ static int sta_open(NET_M_LINK_RT* link, NET_M_WIFI_PRIV* priv)
         return 0;
     }
 
-    return netmgr_dhcp_start(priv->conf.ifname, net_m_dhcp_notify, priv);
+    ret = netmgr_dhcp_start(priv->conf.ifname, net_m_dhcp_notify, priv);
+    if (-NETMGRERR_DHCP == ret)
+    {
+        /* 该接口取址会话已在运行（重连场景），无需重复拉起 */
+        return 0;
+    }
+    return ret;
+}
+
+/**
+ * @brief STA 模式拉起：启用接口并挂载上下文，关联与取址交由自愈完成
+ * @details 「能启用」与「能连上热点」解耦：
+ *          1) 接口先置管理态 UP（wpa_supplicant 在 DOWN 接口上无法关联）；
+ *          2) 不在本函数内阻塞关联，避免未配置热点/热点不在覆盖范围时
+ *             让 netm_start、netm_link_enable 卡满每个候选的关联超时；
+ *          3) 接口若已处于关联完成态（外部已连），直接按取址方式配置；
+ *          4) 未关联时保持 state=DOWN，由 wifi_heal 按退避重试，
+ *             连接失败原因记录在 connectErr 并由刷新投影到 err。
+ * @param link 链路运行时上下文，不可为空
+ * @param priv 私有数据，不可为空
+ * @return 0 成功（未关联亦为成功）；负值为错误码（仅接口操作失败）
+ */
+static int sta_open(NET_M_LINK_RT* link, NET_M_WIFI_PRIV* priv)
+{
+    NETMGR_WPA_STATE wstate = NETMGR_WPA_UNKNOWN; /* 当前 wpa 工作状态 */
+    int ret = 0;                                  /* 子步骤返回值 */
+
+    /* 第 1 步：先启用接口，关联要求管理态 UP（与 ap_start 顺序保持一致） */
+    ret = netmgr_iface_enable(priv->conf.ifname, 1);
+    if (ret < 0)
+    {
+        return ret;
+    }
+
+    /* 第 2 步：挂载上下文，之后无论能否连上都能被刷新与自愈访问 */
+    (void)snprintf(link->ifname, sizeof(link->ifname), "%s", priv->conf.ifname);
+    (void)snprintf(link->dns, sizeof(link->dns), "%s", priv->conf.dns);
+    link->priv = priv;
+
+    /* 第 3 步：已关联完成（如 wpa 进程仍在且已连上）时立即取址，其余留给自愈 */
+    if (0 != netmgr_wpa_is_open() && 0 == netmgr_wpa_state(&wstate) &&
+        NETMGR_WPA_COMPLETED == wstate)
+    {
+        return sta_addr_start(link, priv);
+    }
+
+    link->state = NET_M_ST_DOWN;
+    return 0;
 }
 
 /**
@@ -424,8 +465,9 @@ static int conf_check(const NET_M_WIFI_CONF* conf)
         return 0;
     }
 
-    /* STA：至少 1 个候选，且逐个校验 */
-    if (conf->candNum <= 0 || conf->candNum > NET_M_CAND_MAX)
+    /* STA：候选数允许为 0（未配置热点时链路仍可启用，只是保持 DOWN 不连接）；
+       超出上限或已填候选非法才拒绝 */
+    if (conf->candNum < 0 || conf->candNum > NET_M_CAND_MAX)
     {
         return -NETMGRERR_CONF;
     }
@@ -597,15 +639,30 @@ static int sta_refresh(NET_M_LINK_RT* link, NET_M_WIFI_PRIV* priv)
     if (0 == priv->conf.useDhcp)
     {
         link->err = 0;
-        return net_m_link_ready_static(link, priv->conf.gate);
+        ret = net_m_link_ready_static(link, priv->conf.gate);
     }
-
-    ret = net_m_link_ready(link);
+    else
+    {
+        ret = net_m_link_ready(link);
+        if (ret >= 0)
+        {
+            net_m_link_attr_dhcp(link);
+        }
+    }
     if (ret < 0)
     {
         return ret;
     }
-    net_m_link_attr_dhcp(link);
+
+    /* 关联失败原因投影：未就绪时保留最近一次连接错误码便于查询定位，就绪即清除 */
+    if (NET_M_ST_READY == link->state)
+    {
+        priv->connectErr = 0;
+    }
+    else if (0 != priv->connectErr)
+    {
+        link->err = priv->connectErr;
+    }
     return 0;
 }
 
@@ -672,14 +729,17 @@ static int wifi_refresh(NET_M_LINK_RT* link)
 
 /**
  * @brief 自愈：STA 断开后重新择优连接；AP 进程退出后重启服务
- * @details 由管理线程按退避策略调用，refresh 保持纯投影语义
+ * @details 由管理线程按退避策略调用，refresh 保持纯投影语义。
+ *          STA 未配置候选热点时直接返回成功（链路保持启用、不产生退避），
+ *          连接失败才返回负值让管理线程退避重试
  * @param link 链路运行时上下文，不可为空
  * @return 0 自愈动作完成；负值为错误码（触发退避）
  */
 static int wifi_heal(NET_M_LINK_RT* link)
 {
-    NET_M_WIFI_PRIV* priv = NULL; /* 私有数据 */
-    int ret = 0;                  /* 子步骤返回值 */
+    NET_M_WIFI_PRIV* priv = NULL;                 /* 私有数据 */
+    NETMGR_WPA_STATE wstate = NETMGR_WPA_UNKNOWN; /* 当前 wpa 工作状态 */
+    int ret = 0;                                  /* 子步骤返回值 */
 
     if (NULL == link || NULL == link->priv)
     {
@@ -697,20 +757,28 @@ static int wifi_heal(NET_M_LINK_RT* link)
         return ap_start(priv, link);
     }
 
-    /* STA：重新择优连接（sta_connect 内部按需重建控制通道） */
+    /* 未配置候选热点：链路保持启用但无可连目标，不视为失败、不进入退避 */
+    if (priv->conf.candNum <= 0)
+    {
+        link->state = NET_M_ST_DOWN;
+        return 0;
+    }
+
+    /* 已关联（重连前先看是否其实还连着）：只补一次取址，不重复连接 */
+    if (0 != netmgr_wpa_is_open() && 0 == netmgr_wpa_state(&wstate) &&
+        NETMGR_WPA_COMPLETED == wstate)
+    {
+        return sta_addr_start(link, priv);
+    }
+
+    /* 未关联：重新择优连接（sta_connect 内部按需重建控制通道） */
+    priv->addrStarted = 0;
     ret = sta_connect(priv);
     if (ret < 0)
     {
+        priv->connectErr = ret; /* 失败原因留给刷新投影，链路保持启用并退避重试 */
         return ret;
     }
-
-    /* 连接成功后按取址方式重新取址 */
-    if (0 == priv->conf.useDhcp)
-    {
-        (void)netmgr_iface_setip(priv->conf.ifname, priv->conf.ip);
-        (void)netmgr_iface_setmask(priv->conf.ifname, priv->conf.mask);
-        (void)snprintf(link->gate, sizeof(link->gate), "%s", priv->conf.gate);
-        return 0;
-    }
-    return netmgr_dhcp_start(priv->conf.ifname, net_m_dhcp_notify, priv);
+    priv->connectErr = 0;
+    return sta_addr_start(link, priv);
 }
