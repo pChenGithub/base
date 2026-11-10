@@ -41,6 +41,18 @@ int netmgr_route_act(NETMGR_ROUTE* out);
  */
 int netmgr_route_dev(const char* ifname, NETMGR_ROUTE* out);
 
+/* ===== 操作（所有权接管） ===== */
+
+/**
+ * @brief 清空主路由表中所有 IPv4 默认路由
+ * @details 逐条删除当前存在的默认路由（含不同 metric、不同出口），直到表内没有默认路由；
+ *          供上层在启动时接管默认路由所有权，避免外部脚本/手工配置的条目
+ *          阻塞后续按 metric 下发的条目安装
+ * @note 无网关的默认路由（如 `default dev ppp0`）不在处理范围内
+ * @return 0 成功（本就没有默认路由同样是成功）；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_route_clear_defaults(void);
+
 /* ===== 操作 ===== */
 
 /**

@@ -34,6 +34,9 @@ typedef struct {
  */
 static NETMGR_RT_CTX g_rt_ctx;
 
+/** 清理默认路由的防御性上限（条）：防止异常情况下反复删同一条导致死循环 */
+#define ROUTE_DEF_CLEAR_MAX 8
+
 /** netlink 路由请求布局：消息头 + 路由消息体 + 属性区 */
 typedef struct {
     struct nlmsghdr nlh;      /**< netlink 消息头 */
@@ -130,8 +133,9 @@ static int route_send(int fd, struct nlmsghdr* nlh, int lenient)
         err = (struct nlmsgerr*)NLMSG_DATA(msg);
         if (0 == err->error)
             return 0;
-        /* 幂等删除：目标路由本就不存在，视为已达成，避免切换过程中误报失败 */
-        if (0 != lenient && -ENOENT == err->error)
+        /* 幂等删除：目标路由本就不存在（ENOENT / ESRCH），视为已达成，
+           避免切换过程中误报失败 */
+        if (0 != lenient && (-ENOENT == err->error || -ESRCH == err->error))
             return 0;
         errno = -err->error;
         return -NETMGRERR_ROUTE;
@@ -150,17 +154,24 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
 {
     struct rtmsg* rtm = NULL;         /* 路由消息体 */
     struct rtattr* rta = NULL;        /* 属性视图 */
+    struct rtnexthop* nh = NULL;      /* 多路径下一跳视图 */
+    struct rtattr* mta = NULL;        /* 多路径下一跳的属性视图 */
     struct in_addr gw = {0};          /* 网关地址 */
     char ifname[16] = {0};            /* 出口接口名 */
     int rta_len = 0;                  /* 剩余属性长度 */
+    int nh_len = 0;                   /* 剩余下一跳长度 */
+    int mta_len = 0;                  /* 剩余下一跳属性长度 */
     int metric = 0;                   /* 路由 metric */
+    int table = 0;                    /* 路由表号：RTA_TABLE 优先，缺省取 rtm_table */
     int oif = 0;                      /* 出口接口索引 */
     int has_gw = 0;                   /* 1=已解析到网关 */
 
     rtm = (struct rtmsg*)NLMSG_DATA(nlh);
-    /* 只处理主路由表中的 IPv4 默认路由，其它条目与主备无关 */
-    if (AF_INET != rtm->rtm_family || RT_TABLE_MAIN != (int)rtm->rtm_table || 0 != rtm->rtm_dst_len)
+    /* 只处理 IPv4 默认路由；表号在解析属性后再判定（老内核用 rtm_table，
+       新内核对非 main 表会把表号放进 RTA_TABLE 而 rtm_table 为 UNSPEC） */
+    if (AF_INET != rtm->rtm_family || 0 != rtm->rtm_dst_len)
         return;
+    table = (int)rtm->rtm_table;
 
     rta = RTM_RTA(rtm);
     rta_len = (int)RTM_PAYLOAD(nlh);
@@ -183,10 +194,39 @@ static void route_parse(struct nlmsghdr* nlh, const char* filter, NETMGR_ROUTE* 
             if (RTA_PAYLOAD(rta) >= (int)sizeof(metric))
                 memcpy(&metric, RTA_DATA(rta), sizeof(metric));
             break;
+        case RTA_TABLE:
+            if (RTA_PAYLOAD(rta) >= (int)sizeof(table))
+                memcpy(&table, RTA_DATA(rta), sizeof(table));
+            break;
+        case RTA_MULTIPATH:
+            /* 等价多路径条目：网关与出口在下一跳里，顶层没有 RTA_GATEWAY/RTA_OIF；
+               取第一个带网关的下一跳作为该条目的代表（与 ip route 显示顺序一致） */
+            nh = (struct rtnexthop*)RTA_DATA(rta);
+            nh_len = (int)RTA_PAYLOAD(rta);
+            for (; 0 == has_gw && RTNH_OK(nh, nh_len); nh = RTNH_NEXT(nh))
+            {
+                mta = RTNH_DATA(nh);
+                mta_len = (int)(nh->rtnh_len - RTNH_LENGTH(0));
+                for (; RTA_OK(mta, mta_len); mta = RTA_NEXT(mta, mta_len))
+                {
+                    if (RTA_GATEWAY == mta->rta_type && RTA_PAYLOAD(mta) >= (int)sizeof(gw))
+                    {
+                        memcpy(&gw, RTA_DATA(mta), sizeof(gw));
+                        oif = nh->rtnh_ifindex;
+                        has_gw = 1;
+                        break;
+                    }
+                }
+            }
+            break;
         default:
             break;
         }
     }
+
+    /* 只认主路由表：表号可能来自 rtm_table，也可能来自 RTA_TABLE */
+    if (RT_TABLE_MAIN != table)
+        return;
 
     if (!has_gw || 0 == oif)
         return;
@@ -235,8 +275,11 @@ static int route_dump(const char* filter, NETMGR_ROUTE* best)
     if (fd < 0)
         return fd;
 
-    /* 构造 RTM_GETROUTE dump 请求，一次性取回主路由表 */
+    /* 构造 RTM_GETROUTE dump 请求，一次性取回主路由表；
+       必须先清零请求区：本缓冲同时用于接收应答，残留字节会成为 rtmsg 的
+       过滤字段（如 rtm_dst_len/rtm_table），导致内核返回空结果、查询永远失败 */
     nlh = (struct nlmsghdr*)g_rt_ctx.buf;
+    memset(nlh, 0, NLMSG_LENGTH(sizeof(struct rtmsg)));
     nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
     nlh->nlmsg_type = RTM_GETROUTE;
     nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
@@ -325,7 +368,9 @@ static int route_apply(const char* ifname, const char* gate, int metric,
     req.nlh.nlmsg_seq = 1;
     req.rtm.rtm_family = AF_INET;
     req.rtm.rtm_table = RT_TABLE_MAIN;
-    req.rtm.rtm_protocol = RTPROT_STATIC;
+    /* 删除时不限定协议：DHCP 客户端装的路由 proto 为 boot/dhcp，
+       若指定 RTPROT_STATIC 内核按协议不匹配返回 ESRCH，正常条目也删不掉 */
+    req.rtm.rtm_protocol = (0 != del) ? 0 : RTPROT_STATIC;
     req.rtm.rtm_scope = RT_SCOPE_UNIVERSE;
     req.rtm.rtm_type = RTN_UNICAST;
     req.rtm.rtm_dst_len = 0;
@@ -430,4 +475,39 @@ int netmgr_route_dev(const char* ifname, NETMGR_ROUTE* out)
         return -NETMGRERR_PARAM;
     }
     return route_dump(ifname, out);
+}
+
+/**
+ * @brief 清空主路由表中所有 IPv4 默认路由
+ * @details 反复查询当前最优默认路由并逐条删除，直到再无默认路由或达到防御性上限；
+ *          供上层成为默认路由的唯一所有者：启动前清掉外部脚本/手工配置的条目，
+ *          避免它们与按 metric 下发的条目抢占或阻塞新条目安装
+ * @note 无网关的默认路由（如 `default dev ppp0`）不在本函数处理范围内
+ * @return 0 成功（本就没有默认路由同样是成功）；负值为 NETMGRERR_* 错误码
+ */
+int netmgr_route_clear_defaults(void)
+{
+    NETMGR_ROUTE act = {0}; /* 当前最优默认路由 */
+    int ret = 0;            /* 子步骤返回值 */
+    int i = 0;              /* 已删除条数，从 0 开始 */
+
+    for (i = 0; i < ROUTE_DEF_CLEAR_MAX; ++i)
+    {
+        memset(&act, 0, sizeof(act));
+        ret = netmgr_route_act(&act);
+        if (-NETMGRERR_NOTFOUND == ret)
+        {
+            return 0; /* 已无默认路由，目标达成 */
+        }
+        if (ret < 0)
+        {
+            return ret;
+        }
+        ret = netmgr_route_del(act.ifname, act.gate, act.metric);
+        if (ret < 0)
+        {
+            return ret;
+        }
+    }
+    return 0;
 }
