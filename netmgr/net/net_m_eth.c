@@ -27,9 +27,10 @@ typedef struct {
 static int eth_open(NET_M_LINK_RT* link, const void* conf);
 static int eth_close(NET_M_LINK_RT* link);
 static int eth_refresh(NET_M_LINK_RT* link);
+static int eth_heal(NET_M_LINK_RT* link);
 
-/** 以太网链路操作表；DHCP 由 sys 层自行重试，故不提供自愈钩子 */
-const NET_M_OPS net_m_eth_ops = {eth_open, eth_close, eth_refresh, NULL};
+/** 以太网链路操作表：heal 用于拔插后强制重新取址（udhcpc 不感知 carrier） */
+const NET_M_OPS net_m_eth_ops = {eth_open, eth_close, eth_refresh, eth_heal};
 
 static int eth_open(NET_M_LINK_RT* link, const void* conf)
 {
@@ -171,4 +172,38 @@ static int eth_refresh(NET_M_LINK_RT* link)
     /* 静态地址：网关取配置值，不查路由表 */
     link->err = 0;
     return net_m_link_ready_static(link, priv->conf.gate);
+}
+
+/**
+ * @brief 自愈：载体恢复后按配置重建地址/取址
+ * @details udhcpc 不监听 carrier：拔插网线后它不会重新 DISCOVER，租约内也不会重装
+ *          默认路由，链路会长期停在 DOWN。本钩子在有载体且曾取址成功时重建一次
+ *          （DHCP 重建会话 / 静态重下发地址），把地址、网关与默认路由一起刷新。
+ * @param link 链路运行时上下文，不可为空
+ * @return 0 无需动作或已重建；负值为错误码（触发退避）
+ */
+static int eth_heal(NET_M_LINK_RT* link)
+{
+    NET_M_ETH_PRIV* priv = NULL; /* 私有数据 */
+
+    if (NULL == link || NULL == link->priv)
+    {
+        return -NETMGRERR_PARAM;
+    }
+    priv = (NET_M_ETH_PRIV*)link->priv;
+
+    /* 未插线：等载体恢复，不重建 */
+    if (!netmgr_iface_ready(priv->conf.ifname))
+    {
+        return 0;
+    }
+
+    /* 首次取址尚未成功：udhcpc 自己仍在重试，不打断它 */
+    if (0 != priv->conf.useDhcp && 0 == link->dhcpSeen)
+    {
+        return 0;
+    }
+
+    return net_m_link_restore(link, priv->conf.ifname, priv->conf.useDhcp,
+                              priv->conf.ip, priv->conf.mask, priv);
 }

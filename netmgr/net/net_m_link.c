@@ -11,6 +11,7 @@
 #include "net_mgr_route.h"
 
 #include <stdio.h>
+#include <time.h>
 
 /**
  * @brief 就绪判定公共前三步：物理连通 → 已取地址 → 掩码
@@ -76,7 +77,9 @@ int net_m_link_ready(NET_M_LINK_RT* link)
         return 0;
     }
 
-    /* 第 4 步：网关由 DHCP 客户端写入路由表，此处回查；查不到即视为未就绪 */
+    /* 第 4 步：网关由 DHCP 客户端写入路由表，此处回查；查不到即视为未就绪
+       （拔插网线后本模块会撤销自己下发的路由，而 udhcpc 不感知 carrier，
+       由 eth_heal 在 carrier 恢复时重启一次取址会话，重新装入地址与默认路由） */
     ret = netmgr_route_dev(link->ifname, &route);
     if (ret < 0)
     {
@@ -112,6 +115,73 @@ int net_m_link_ready_static(NET_M_LINK_RT* link, const char* gate)
     (void)snprintf(link->gate, sizeof(link->gate), "%s", gate);
     link->state = ('\0' != link->gate[0]) ? NET_M_ST_READY : NET_M_ST_DOWN;
     return 0;
+}
+
+/**
+ * @brief 取单调时钟毫秒数
+ * @return 毫秒数
+ */
+static long long link_now_ms(void)
+{
+    struct timespec ts = {0}; /* 单调时钟读数 */
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + (long long)ts.tv_nsec / 1000000;
+}
+
+/**
+ * @brief 按配置重建地址（静态重下发地址/掩码，DHCP 重建取址会话）
+ * @details DHCP 分支按 NET_M_REDHCP_MS 节流：拔插/重连期间每个 tick 都会进 heal，
+ *          不节流会把刚建好的会话反复打断；静态分支幂等，无需节流
+ * @param link    链路运行时上下文，不可为空
+ * @param ifname  接口名，不可为空
+ * @param useDhcp 1=DHCP 取址，0=静态地址
+ * @param ip      静态地址，useDhcp=0 时不可为空
+ * @param mask    静态掩码，useDhcp=0 时不可为空
+ * @param priv    链路私有数据（DHCP 回调透传），可为空
+ * @return 0 无需动作或已重建；负值为错误码
+ */
+int net_m_link_restore(NET_M_LINK_RT* link, const char* ifname, int useDhcp,
+                       const char* ip, const char* mask, void* priv)
+{
+    long long now = 0; /* 当前时刻（毫秒） */
+    int ret = 0;       /* 子步骤返回值 */
+
+    if (NULL == link || NULL == ifname)
+    {
+        return -NETMGRERR_PARAM;
+    }
+
+    /* 静态地址：重新下发地址与掩码（幂等）；默认路由由仲裁按 prio 统一下发 */
+    if (0 == useDhcp)
+    {
+        if (NULL == ip || NULL == mask)
+        {
+            return -NETMGRERR_PARAM;
+        }
+        ret = netmgr_iface_enable(ifname, 1);
+        if (ret < 0)
+        {
+            return ret;
+        }
+        ret = netmgr_iface_setip(ifname, ip);
+        if (ret < 0)
+        {
+            return ret;
+        }
+        return netmgr_iface_setmask(ifname, mask);
+    }
+
+    /* DHCP：节流后重建会话，强制重新 DISCOVER 拿到新的地址与网关 */
+    now = link_now_ms();
+    if (0 != link->redhcpAt && now < link->redhcpAt)
+    {
+        return 0;
+    }
+    link->redhcpAt = now + NET_M_REDHCP_MS;
+
+    (void)netmgr_dhcp_stop(ifname);
+    return netmgr_dhcp_start(ifname, net_m_dhcp_notify, priv);
 }
 
 /**

@@ -24,9 +24,10 @@ typedef struct {
 static int cell_open(NET_M_LINK_RT* link, const void* conf);
 static int cell_close(NET_M_LINK_RT* link);
 static int cell_refresh(NET_M_LINK_RT* link);
+static int cell_heal(NET_M_LINK_RT* link);
 
-/** 4G 链路操作表；DHCP 由 sys 层自行重试，故不提供自愈钩子 */
-const NET_M_OPS net_m_cell_ops = {cell_open, cell_close, cell_refresh, NULL};
+/** 4G 链路操作表：heal 用于接口重新枚举/链路恢复后重建取址会话 */
+const NET_M_OPS net_m_cell_ops = {cell_open, cell_close, cell_refresh, cell_heal};
 
 static int cell_open(NET_M_LINK_RT* link, const void* conf)
 {
@@ -146,4 +147,36 @@ static int cell_refresh(NET_M_LINK_RT* link)
 
     /* 4G 恒为 DHCP 取址：接口消失、就绪判定与 DOWN 归因共用公共实现 */
     return net_m_link_ready_dhcp(link);
+}
+
+/**
+ * @brief 自愈：接口恢复后重建取址会话
+ * @details 4G 网卡重新枚举或链路恢复后，本模块已撤销自己下发的默认路由，
+ *          而 udhcpc 不感知 carrier、租约内不会重新取址，故在此重建会话
+ * @param link 链路运行时上下文，不可为空
+ * @return 0 无需动作或已重建；负值为错误码（触发退避）
+ */
+static int cell_heal(NET_M_LINK_RT* link)
+{
+    NET_M_CELL_PRIV* priv = NULL; /* 私有数据 */
+
+    if (NULL == link || NULL == link->priv)
+    {
+        return -NETMGRERR_PARAM;
+    }
+    priv = (NET_M_CELL_PRIV*)link->priv;
+
+    /* 接口未枚举或未就绪：等驱动恢复，不重建会话 */
+    if (!netmgr_iface_ready(priv->conf.ifname))
+    {
+        return 0;
+    }
+
+    /* 首次取址尚未成功：udhcpc 自己仍在重试，不打断它 */
+    if (0 == link->dhcpSeen)
+    {
+        return 0;
+    }
+
+    return net_m_link_restore(link, priv->conf.ifname, 1, NULL, NULL, priv);
 }

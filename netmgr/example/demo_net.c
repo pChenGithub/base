@@ -49,6 +49,7 @@
 #include <unistd.h>
 
 #include "net_m_def.h"
+#include "net_mgr_route.h"
 
 /** 命令行缓冲长度 */
 #define DEMO_LINE_LEN 256
@@ -129,6 +130,8 @@ static void demo_help(void)
     printf("[net]   C <ifname> [dns]    4G（ECM）重配    d <ip>|-        DNS 下发/清除\r\n");
     printf("[net]   w                WiFi 扫描        r            最近一次扫描结果\r\n");
     printf("[net]   i                WiFi 连接信息    t/T          启动/停止服务\r\n");
+    printf("[net]   R                路由调试（act/dev 实际返回值，排查网关取不到）\r\n");
+    printf("[net]   D                清空全部默认路由（调试，打印返回码）\r\n");
     printf("[net]   h               帮助             q            退出（自动 stop）\r\n");
     printf("[net] 空闲时每 %d 秒检测一次链路变化，仅变化才打印\r\n", DEMO_WATCH_S);
 }
@@ -858,6 +861,46 @@ static void demo_cmd_conf(char** av, int n)
 }
 
 /**
+ * @brief 路由调试：打印 route_act 与各链路 route_dev 的真实返回值
+ * @details 用于排查「链路有地址但网关为空」：区分内核里确实没有该接口的默认路由（-205）
+ *          与查询/解析失败，避免只看快照猜原因
+ */
+static void demo_cmd_route(void)
+{
+    NETMGR_ROUTE act = {0};  /* 当前生效默认路由 */
+    NETMGR_ROUTE dev = {0};  /* 单接口默认路由 */
+    NET_M_LINK link = {0};   /* 链路快照 */
+    int ret = 0;             /* 接口返回值 */
+    int i = 0;               /* 链路类型下标，从 0 开始 */
+
+    ret = netmgr_route_act(&act);
+    if (ret < 0)
+        printf("[route] act 失败, ret=%d（-205=当前无默认路由）\r\n", ret);
+    else
+        printf("[route] act ifname=%s gate=%s metric=%d\r\n", act.ifname, act.gate, act.metric);
+
+    for (i = 0; i < NET_M_TYPE_MAX; ++i)
+    {
+        if (netm_link_get((NET_M_TYPE)i, &link) < 0)
+            continue;
+        if ('\0' == link.ifname[0])
+        {
+            printf("[route] dev %-6s 未启用\r\n", demo_type_name((NET_M_TYPE)i));
+            continue;
+        }
+
+        memset(&dev, 0, sizeof(dev));
+        ret = netmgr_route_dev(link.ifname, &dev);
+        if (ret < 0)
+            printf("[route] dev %-6s ifname=%-8s ret=%d（-205=该接口无默认路由）\r\n",
+                   demo_type_name((NET_M_TYPE)i), link.ifname, ret);
+        else
+            printf("[route] dev %-6s ifname=%-8s gate=%s metric=%d\r\n",
+                   demo_type_name((NET_M_TYPE)i), link.ifname, dev.gate, dev.metric);
+    }
+}
+
+/**
  * @brief 按命令字分派
  * @param av 参数数组，av[0] 为命令字，不可为空
  * @param n  参数个数
@@ -875,6 +918,13 @@ static int demo_cmd_run(char** av, int n)
         break;
     case 's':
         demo_cmd_dump();
+        break;
+    case 'R':
+        demo_cmd_route();
+        break;
+    case 'D':
+        /* 调试：手动触发一次“清空全部默认路由”，打印返回码后配合 R 观察结果 */
+        printf("[route] clear_defaults ret=%d\r\n", netmgr_route_clear_defaults());
         break;
     case 'q':
         return 1;

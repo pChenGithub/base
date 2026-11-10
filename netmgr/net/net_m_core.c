@@ -15,6 +15,7 @@
 #include "net_mgr_dns.h"
 #include "net_mgr_err.h"
 #include "net_mgr_event.h"
+#include "net_mgr_route.h"
 #include "net_mgr_util.h"
 #include "net_mgr_wpa.h"
 
@@ -348,6 +349,7 @@ static int core_link_reset(NET_M_TYPE type, const void* conf, int enable, unsign
         link->err = 0;
         link->retryAt = 0;
         link->retryCount = 0;
+        link->redhcpAt = 0;
         return err;
     }
 
@@ -766,6 +768,15 @@ static int core_do_start(void)
         g_mgr.link[i].rmetric = -1;
     }
     net_m_arb_reset(&g_mgr.arb);
+
+    /* 接管默认路由所有权：清掉外部（DHCP 脚本/手工配置）的默认路由，
+       否则它们会与按 metric 下发的条目冲突（同 metric 不同网关报 File exists），
+       导致该接口装不上默认路由、进而取不到网关而永远判 DOWN */
+    ret = netmgr_route_clear_defaults();
+    if (ret < 0 && 0 == err)
+    {
+        err = ret; /* 清理失败不阻断启动，由链路状态与故障码体现 */
+    }
 
     for (i = 0; i < NET_M_TYPE_MAX; ++i)
     {

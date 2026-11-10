@@ -768,6 +768,14 @@ static int wifi_heal(NET_M_LINK_RT* link)
     if (0 != netmgr_wpa_is_open() && 0 == netmgr_wpa_state(&wstate) &&
         NETMGR_WPA_COMPLETED == wstate)
     {
+        /* 关联仍在但链路 DOWN（掉线重连后本模块已撤销默认路由、udhcpc 不会自动重取址）：
+           按配置重建一次取址/地址，而不是只补一次地址配置 */
+        if (NET_M_ST_DOWN == link->state && 0 != priv->addrStarted)
+        {
+            priv->addrStarted = 0;
+            return net_m_link_restore(link, priv->conf.ifname, priv->conf.useDhcp,
+                                      priv->conf.ip, priv->conf.mask, priv);
+        }
         return sta_addr_start(link, priv);
     }
 

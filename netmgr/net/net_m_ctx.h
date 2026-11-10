@@ -27,6 +27,8 @@ extern "C" {
 #define NET_M_QUEUE_CAPACITY 32
 /** 管理线程等待命令的最长时间（毫秒）：决定定时仲裁的实际间隔精度 */
 #define NET_M_WAIT_SLICE_MS 200
+/** 重建取址会话的最小间隔（毫秒）：拔插/重连恢复时的节流，避免每个 tick 反复重启 */
+#define NET_M_REDHCP_MS     10000
 
 /* ===== 类型定义 ===== */
 
@@ -46,6 +48,7 @@ typedef struct {
     char ip[16];                 /**< 当前 IP */
     char mask[16];               /**< 当前掩码 */
     char gate[16];               /**< 当前网关 */
+    long long redhcpAt;          /**< 下次允许强制重新取址的时刻（毫秒），0 表示不限 */
     char dns[16];                /**< DNS 服务器 */
     int err;                     /**< 业务语义异常码，0 表示无异常 */
     int fault;                   /**< 内部故障码，0 表示无故障 */
@@ -156,6 +159,23 @@ int net_m_link_ready_static(NET_M_LINK_RT* link, const char* gate);
  * @return 0 成功（未就绪亦为 0）；负值为错误码
  */
 int net_m_link_ready_dhcp(NET_M_LINK_RT* link);
+
+/**
+ * @brief 按配置重建地址：静态重新下发地址/掩码，DHCP 重建取址会话（带节流）
+ * @details 拔插网线、WiFi 重连、4G 接口重新枚举后，本模块已撤销自己下发的默认路由，
+ *          而 udhcpc 不监听 carrier、租约内不会重新取址，链路会一直停在 DOWN；
+ *          由各链路 heal 钩子在「载体在位且链路 DOWN」时调用本函数恢复。
+ *          静态分支不下发默认路由（由仲裁按 prio 统一下发），DHCP 分支保留地址配置责任在 sys 层
+ * @param link    链路运行时上下文，不可为空
+ * @param ifname  接口名，不可为空
+ * @param useDhcp 1=DHCP 取址，0=静态地址
+ * @param ip      静态地址，useDhcp=0 时不可为空
+ * @param mask    静态掩码，useDhcp=0 时不可为空
+ * @param priv    链路私有数据（DHCP 回调透传），可为空
+ * @return 0 无需动作或已重建；负值为错误码
+ */
+int net_m_link_restore(NET_M_LINK_RT* link, const char* ifname, int useDhcp,
+                       const char* ip, const char* mask, void* priv);
 
 /**
  * @brief 按 DHCP 会话状态归因 DOWN 原因（仅当状态为 DOWN 时生效）

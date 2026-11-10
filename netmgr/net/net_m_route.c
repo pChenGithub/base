@@ -4,6 +4,9 @@
  * @details 相对 netmgr 的差异：删除失败不再把 route_on 清 0，避免「内核仍有路由但
  *          模块认为已撤销」的状态失真；路由变更采用先建新再删旧的顺序，
  *          缩小切换瞬间的无路由窗口。
+ *          默认路由所有权：本模块独占。启动时由 core 清空既有默认路由；
+ *          运行期每条链路在本函数里接管该接口上的非目标条目（如 DHCP 脚本按
+ *          metric 0 装的默认路由），保证内核里只有按 prio 下发的那一条。
  */
 #include "net_m_ctx.h"
 
@@ -54,6 +57,7 @@ int net_m_route_revoke(NET_M_LINK_RT* link)
  */
 int net_m_route_sync(NET_M_LINK_RT* link)
 {
+    NETMGR_ROUTE cur = {0}; /* 该接口当前最优默认路由 */
     int need = 0;   /* 1=应下发默认路由 */
     int metric = 0; /* 目标 metric */
     int ret = 0;    /* 子步骤返回值 */
@@ -70,6 +74,22 @@ int net_m_route_sync(NET_M_LINK_RT* link)
     if (0 == need)
     {
         return net_m_route_revoke(link);
+    }
+
+    /* 接管：该接口当前最优默认路由若非目标形态（DHCP 脚本按 metric 0 装的条目、
+       旧网关或旧 metric 的条目），先删掉它再下发本模块条目，
+       保证内核里该接口只保留一条由本模块按 prio 管理的默认路由 */
+    ret = netmgr_route_dev(link->ifname, &cur);
+    if (0 == ret && (cur.metric != metric || 0 != strcmp(cur.gate, link->gate)))
+    {
+        ret = netmgr_route_del(link->ifname, cur.gate, cur.metric);
+        if (ret < 0)
+        {
+            return ret; /* 旧条目删不掉就先不下发，下一轮重试 */
+        }
+        link->route_on = 0;
+        link->rmetric = -1;
+        link->rgate[0] = '\0';
     }
 
     /* 已下发且网关与 metric 均未变：不触碰内核，避免无谓抖动 */
