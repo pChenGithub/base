@@ -78,6 +78,9 @@ typedef struct {
 
     /**
      * @brief 关闭链路并释放其占用的资源
+     * @details 除停止取址 / 关联进程外，还须把接口管理态置 DOWN
+     *          （等价 ip link set <ifname> down，地址保留），
+     *          保证"禁用链路"与系统命令效果一致
      * @param link 链路运行时上下文
      * @return 0 成功；负值为错误码
      */

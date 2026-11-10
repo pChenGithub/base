@@ -96,7 +96,8 @@ static int cell_open(NET_M_LINK_RT* link, const void* conf)
 
 static int cell_close(NET_M_LINK_RT* link)
 {
-    int ret = 0; /* 停止 DHCP 的返回值 */
+    int err = 0; /* 首个错误码 */
+    int ret = 0; /* 子步骤返回值 */
 
     if (NULL == link)
     {
@@ -105,7 +106,19 @@ static int cell_close(NET_M_LINK_RT* link)
 
     if ('\0' != link->ifname[0])
     {
+        /* 停止取址失败不阻断资源释放，错误码在末尾上抛 */
         ret = netmgr_dhcp_stop(link->ifname);
+        if (ret < 0)
+        {
+            err = ret;
+        }
+
+        /* 关闭接口管理态：与 ip link set <ifname> down 等效 */
+        ret = netmgr_iface_enable(link->ifname, 0);
+        if (ret < 0 && 0 == err)
+        {
+            err = ret;
+        }
     }
 
     free(link->priv);
@@ -121,7 +134,7 @@ static int cell_close(NET_M_LINK_RT* link)
     link->err = 0;
     link->dhcpSeen = 0;
     link->dhcpErr = 0;
-    return ret;
+    return err;
 }
 
 static int cell_refresh(NET_M_LINK_RT* link)

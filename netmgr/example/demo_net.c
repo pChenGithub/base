@@ -10,6 +10,34 @@
  *      netm_wifi_scan / netm_wifi_scan_result / netm_wifi_status
  *
  * 优先级约定：以太网 10、WiFi 20、4G 30，数值越小越优先（等同路由 metric）。
+ *
+ * 测试项与命令行操作命令对照表（每项一条命令，逐项执行即可对比结果）：
+ *   T01  t                                   启动服务：netm_start
+ *   T02  T                                   停止服务：netm_stop
+ *   T03  s                                   全链路快照：netm_link_list（附 netm_active_get）
+ *   T04  g <eth|wifi|cell>                   单链路快照：netm_link_get
+ *   T05  m                                   主链路查询：netm_active_get
+ *   T06  p <eth|wifi|cell>                   优先级查询：netm_prio_get
+ *   T07  p <eth|wifi|cell> <prio>            优先级设置：netm_prio_set
+ *   T08  c <eth|wifi|cell> <prio>            优先级预检查：netm_prio_check
+ *   T09  e <eth|wifi|cell> <0|1>             链路开关：netm_link_enable
+ *   T10  E dhcp [dns]                        以太网 DHCP 重配：netm_eth_set
+ *   T11  E static <ip> <mask> <gate> [dns]   以太网静态重配：netm_eth_set
+ *   T12  W <ssid> <passwd>                   WiFi STA 重配：netm_wifi_set
+ *   T13  A <ssid> [passwd]                   WiFi AP 重配：netm_wifi_set
+ *   T14  C <ifname> [dns]                    4G（ECM）重配：netm_cell_set
+ *   T15  d <ip>|-                            DNS 下发/清除：netm_dns_set
+ *   T16  w                                   WiFi 扫描：netm_wifi_scan
+ *   T17  r                                   扫描结果读取：netm_wifi_scan_result
+ *   T18  i                                   WiFi 连接信息：netm_wifi_status
+ *   T19  （空闲无输入，自动）                链路变化检测：netm_link_get 周期对比
+ *
+ * 系统同效果命令不在此处罗列，一律写在对应 netm_* 调用代码旁边（"系统对照：" 开头），
+ * 便于边看代码边执行系统命令核对系统真实状态。
+ *
+ * 对比口径：T03/T04/T05 对同一链路应给出相同状态与地址，且与各自标注的系统命令输出一致；
+ *          T17 的 r 结果与 T16 的 w 结果应一致；T19 打印的"变化"内容须与事件回调
+ *          [event] 的前后值一致；T02 后不再出现事件即为停止成功。
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -392,6 +420,7 @@ static void demo_cmd_dump(void)
     int ret = 0;                            /* 接口返回值 */
     int i = 0;                              /* 快照下标，从 0 开始 */
 
+    /* 测试项 T03：全链路快照，命令 s；系统对照：ip -br addr show; ip route show default */
     ret = netm_link_list(list, &num);
     if (ret < 0)
     {
@@ -403,6 +432,7 @@ static void demo_cmd_dump(void)
     for (i = 0; i < num; ++i)
         demo_print_link("状态", &list[i]);
 
+    /* 测试项 T05：主链路查询（s 附带输出），命令 m 单独查询；系统对照：ip route get 8.8.8.8 */
     ret = netm_active_get(&active);
     if (ret < 0)
         printf("[net] 获取主链路失败, action=active_get ret=%d\r\n", ret);
@@ -426,6 +456,8 @@ static void demo_watch(NET_M_LINK* last)
 
     for (i = 0; i < NET_M_TYPE_MAX; ++i)
     {
+        /* 测试项 T19：链路变化检测，无命令字，空闲每 DEMO_WATCH_S 秒自动执行；
+           系统对照：另开终端 ip monitor link，逐条对比"变化"打印 */
         if (netm_link_get((NET_M_TYPE)i, &cur) < 0)
             continue;
         if (0 != demo_link_same(&last[i], &cur))
@@ -475,6 +507,7 @@ static void demo_cmd_link(char** av, int n)
 
     if ('m' == av[0][0])
     {
+        /* 测试项 T05：主链路查询，命令 m（无附加参数）；系统对照：ip route get 8.8.8.8 */
         ret = netm_active_get(&type);
         if (ret < 0)
             printf("[net] 主链路查询失败, action=active_get ret=%d\r\n", ret);
@@ -496,6 +529,7 @@ static void demo_cmd_link(char** av, int n)
 
     if ('g' == av[0][0])
     {
+        /* 测试项 T04：单链路快照，命令 g <eth|wifi|cell>；系统对照：ip -br addr show dev <ifname> */
         ret = netm_link_get(type, &link);
         if (ret < 0)
             printf("[net] 获取链路快照失败, action=link_get type=%s ret=%d\r\n",
@@ -507,6 +541,7 @@ static void demo_cmd_link(char** av, int n)
 
     if ('p' == av[0][0] && n < 3)
     {
+        /* 测试项 T06：优先级查询，命令 p <eth|wifi|cell>；系统对照：ip route show default */
         ret = netm_prio_get(type, &prio);
         if (ret < 0)
             printf("[net] 优先级查询失败, action=prio_get type=%s ret=%d\r\n",
@@ -519,6 +554,8 @@ static void demo_cmd_link(char** av, int n)
     if ('p' == av[0][0])
     {
         prio = (unsigned char)atoi(av[2]);
+        /* 测试项 T07：优先级设置，命令 p <eth|wifi|cell> <prio>；
+           系统对照：设置后 ip route show default 看对应 metric 是否改变 */
         ret = netm_prio_set(type, prio);
         if (ret < 0)
             printf("[net] 优先级设置失败, action=prio_set type=%s prio=%u ret=%d\r\n",
@@ -537,6 +574,8 @@ static void demo_cmd_link(char** av, int n)
             return;
         }
         prio = (unsigned char)atoi(av[2]);
+        /* 测试项 T08：优先级预检查，命令 c <eth|wifi|cell> <prio>（不修改状态）；
+           系统对照：无，可先用 ip route show default 列出各链路 metric 作对照 */
         ret = netm_prio_check(type, prio);
         if (ret < 0)
             printf("[net] 优先级不可用, action=prio_check type=%s prio=%u ret=%d（与其它启用链路冲突）\r\n",
@@ -553,6 +592,9 @@ static void demo_cmd_link(char** av, int n)
         printf("[net] 用法: e <eth|wifi|cell> <0|1>\r\n");
         return;
     }
+    /* 测试项 T09：链路开关，命令 e <eth|wifi|cell> <0|1>；
+       系统对照：ip link set <ifname> down|up，再 ip link show <ifname> 看 state
+       （库内同一效果：关闭时清 IFF_UP，地址保留） */
     ret = netm_link_enable(type, (0 != atoi(av[2])) ? 1 : 0);
     if (ret < 0)
         printf("[net] 链路开关失败, action=link_enable type=%s on=%d ret=%d\r\n",
@@ -578,6 +620,7 @@ static void demo_cmd_wifi(char** av, int n)
 
     if ('w' == av[0][0])
     {
+        /* 测试项 T16：WiFi 扫描，命令 w；系统对照：iw dev wlan0 scan */
         ret = netm_wifi_scan(list, &num);
         if (ret < 0)
         {
@@ -591,6 +634,8 @@ static void demo_cmd_wifi(char** av, int n)
 
     if ('r' == av[0][0])
     {
+        /* 测试项 T17：扫描结果读取，命令 r（与 w 的即时结果对比应一致）；
+           系统对照：wpa_cli -i wlan0 scan_results */
         ret = netm_wifi_scan_result(list, &num);
         if (ret < 0)
         {
@@ -602,7 +647,7 @@ static void demo_cmd_wifi(char** av, int n)
         return;
     }
 
-    /* 剩余为 i：连接信息 */
+    /* 剩余为 i：连接信息，测试项 T18，命令 i；系统对照：iw dev wlan0 link */
     ret = netm_wifi_status(&info);
     if (ret < 0)
     {
@@ -635,7 +680,8 @@ static void demo_cmd_wifi_set(char** av, int n)
 
     if ('W' == av[0][0])
     {
-        /* STA：候选热点列表只保留本次这一个，prio=0 按信号强度择优 */
+        /* 测试项 T12：WiFi STA 重配，命令 W <ssid> <passwd>；
+           STA：候选热点列表只保留本次这一个，prio=0 按信号强度择优 */
         conf.mode = NET_M_MODE_STA;
         conf.candNum = 1;
         conf.cand[0].prio = 0;
@@ -645,13 +691,17 @@ static void demo_cmd_wifi_set(char** av, int n)
     }
     else
     {
-        /* AP：热点名与口令，其余地址字段沿用启动配置（空串表示用默认值） */
+        /* 测试项 T13：WiFi AP 重配，命令 A <ssid> [passwd]；
+           AP：热点名与口令，其余地址字段沿用启动配置（空串表示用默认值） */
         conf.mode = NET_M_MODE_AP;
         if (0 != demo_copy(conf.apSsid, (int)sizeof(conf.apSsid), av[1], "apSsid") ||
             0 != demo_copy(conf.apPasswd, (int)sizeof(conf.apPasswd), passwd, "apPasswd"))
             return;
     }
 
+    /* 测试项 T12（按 W 进入）/ T13（按 A 进入）：下发 WiFi 配置；
+       系统对照：STA 用 iw dev wlan0 link（或 wpa_cli -i wlan0 status），
+                 AP 用 iw dev wlan0 info 与 iw dev wlan0 station dump */
     ret = netm_wifi_set(&conf);
     if (ret < 0)
         printf("[net] WiFi 重配失败, action=wifi_set mode=%s ssid=%s ret=%d\r\n",
@@ -672,11 +722,13 @@ static void demo_cmd_eth_set(char** av, int n)
     int dnsIdx = 0;                        /* dns 参数下标，0 表示未指定 */
     int ret = 0;                           /* 接口返回值 */
 
+    /* 测试项 T10：以太网 DHCP 重配，命令 E dhcp [dns] */
     if (n >= 2 && 0 == strcmp(av[1], "dhcp"))
     {
         conf.useDhcp = 1;
         dnsIdx = 2;
     }
+    /* 测试项 T11：以太网静态重配，命令 E static <ip> <mask> <gate> [dns] */
     else if (n >= 5 && 0 == strcmp(av[1], "static"))
     {
         conf.useDhcp = 0;
@@ -698,6 +750,10 @@ static void demo_cmd_eth_set(char** av, int n)
             return;
     }
 
+    /* 测试项 T10（按 dhcp 进入）/ T11（按 static 进入）：下发以太网配置；
+       系统对照：DHCP 用 udhcpc -i eth0 后 ip -4 addr show dev eth0，
+                 静态用 ip addr flush/add dev eth0 与 ip route add default via <gate>
+                 （掩码需换算前缀，如 255.255.255.0 -> /24） */
     ret = netm_eth_set(&conf);
     if (ret < 0)
         printf("[net] 以太网重配失败, action=eth_set mode=%s ret=%d\r\n",
@@ -727,6 +783,8 @@ static void demo_cmd_cell_set(char** av, int n)
     if (n >= 3 && 0 != demo_copy(conf.dns, (int)sizeof(conf.dns), av[2], "dns"))
         return;
 
+    /* 测试项 T14：4G（ECM）重配，命令 C <ifname> [dns]；
+       系统对照：ip -br addr show dev usb0; udhcpc -i usb0（接口名以实际枚举为准） */
     ret = netm_cell_set(&conf);
     if (ret < 0)
         printf("[net] 4G 重配失败, action=cell_set ifname=%s ret=%d\r\n", conf.ifname, ret);
@@ -748,6 +806,8 @@ static void demo_cmd_conf(char** av, int n)
         /* d <ip> 下发；d - 或 d 清除（传 NULL） */
         const char* dns = (n >= 2 && 0 != strcmp(av[1], "-")) ? av[1] : NULL;
 
+        /* 测试项 T15：DNS 下发/清除，命令 d <ip> 或 d -（清除）；
+           系统对照：cat /etc/resolv.conf（nameserver 行应与下发值一致） */
         ret = netm_dns_set(dns);
         if (ret < 0)
             printf("[net] DNS 下发失败, action=dns_set dns=%s ret=%d\r\n",
@@ -760,6 +820,8 @@ static void demo_cmd_conf(char** av, int n)
 
     if ('t' == av[0][0])
     {
+        /* 测试项 T01：启动服务，命令 t；
+           系统对照：ip -4 addr show; ps | grep -E "udhcpc|wpa_supplicant|hostapd" */
         ret = netm_start(&g_demo_conf, demo_event, NULL);
         if (ret < 0)
         {
@@ -770,7 +832,8 @@ static void demo_cmd_conf(char** av, int n)
         return;
     }
 
-    /* 剩余为 T：停止服务 */
+    /* 剩余为 T：停止服务，测试项 T02，命令 T；
+       系统对照：同 T01，停止后应无残留地址、默认路由与相关守护进程 */
     ret = netm_stop();
     if (ret < 0)
         printf("[net] 停止服务失败, action=stop ret=%d\r\n", ret);
@@ -846,6 +909,8 @@ static int demo_start(NET_M_LINK* last)
     if (NULL == last)
         return 1;
 
+    /* 测试项 T01：启动服务（启动即执行一次，等价命令 t）；
+       系统对照：ip -4 addr show; ps | grep -E "udhcpc|wpa_supplicant|hostapd" */
     ret = netm_start(&g_demo_conf, demo_event, NULL);
     if (ret < 0)
     {
@@ -855,6 +920,8 @@ static int demo_start(NET_M_LINK* last)
     }
     printf("[net] 启动服务成功, action=start（管理线程已运行）\r\n");
 
+    /* 快照基线（与命令 g 同口径）；
+       系统对照：ip -br addr show dev <ifname> */
     for (i = 0; i < NET_M_TYPE_MAX; ++i)
         (void)netm_link_get((NET_M_TYPE)i, &last[i]);
     return 0;
@@ -912,7 +979,9 @@ int main(void)
         }
     }
 
-    /* 第 3 步：收尾——停止服务（内部撤路由、关链路、回收管理线程） */
+    /* 第 3 步：收尾——停止服务（内部撤路由、关链路、回收管理线程），
+       测试项 T02，等价命令 T；
+       系统对照：同 T01，停止后应无残留地址、默认路由与相关守护进程 */
     ret = netm_stop();
     if (ret < 0)
         printf("[net] 停止服务失败, action=stop ret=%d\r\n", ret);

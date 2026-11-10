@@ -524,7 +524,8 @@ static int wifi_open(NET_M_LINK_RT* link, const void* conf)
 
 static int wifi_close(NET_M_LINK_RT* link)
 {
-    int ret = 0; /* 停止 DHCP 的返回值 */
+    int err = 0; /* 首个错误码 */
+    int ret = 0; /* 子步骤返回值 */
 
     if (NULL == link)
     {
@@ -535,11 +536,25 @@ static int wifi_close(NET_M_LINK_RT* link)
     if ('\0' != link->ifname[0])
     {
         ret = netmgr_dhcp_stop(link->ifname);
+        if (ret < 0)
+        {
+            err = ret;
+        }
     }
 
     /* STA 与 AP 两侧进程都回收：配置可能在两者间切换过 */
     (void)netmgr_wpa_stop();
     (void)netmgr_ap_stop();
+
+    /* 关闭接口管理态：与 ip link set <ifname> down 等效，须在进程回收之后 */
+    if ('\0' != link->ifname[0])
+    {
+        ret = netmgr_iface_enable(link->ifname, 0);
+        if (ret < 0 && 0 == err)
+        {
+            err = ret;
+        }
+    }
 
     free(link->priv);
     link->priv = NULL;
@@ -555,7 +570,7 @@ static int wifi_close(NET_M_LINK_RT* link)
     link->err = 0;
     link->dhcpSeen = 0;
     link->dhcpErr = 0;
-    return ret;
+    return err;
 }
 
 /**
