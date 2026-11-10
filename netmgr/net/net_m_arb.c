@@ -5,7 +5,9 @@
  *          1) 刷新失败不再静默跳过：链路降级为 DOWN、撤除路由、上报 NET_M_EV_FAULT；
  *          2) DNS 每轮同步（内部去重），不再依赖「主链路是否变化」；
  *          3) 故障位 fault 每轮重新评估，只反映本轮状态，不做历史累积；
- *          4) 就绪链路的优先级唯一性由配置阶段保证，本层不再处理同 metric 冲突。
+ *          4) 就绪链路的优先级唯一性由配置阶段保证，本层不再处理同 metric 冲突；
+ *          5) 载波（网线插拔）单独上报 CARRIER_UP / CARRIER_DOWN，
+ *             不再混在 UP / DOWN / INFO_CHANGE 里，便于业务区分"物理断开"与"未取到地址"。
  *          本函数不起停进程、不调用业务回调，链路槽由管理线程独占写入。
  */
 #include "net_m_ctx.h"
@@ -34,6 +36,7 @@ static void arb_conv(const NET_M_LINK_RT* link, NET_M_LINK* out)
     out->fault = link->fault;
     out->faultStage = link->faultStage;
     out->wifi = link->wifi;
+    out->carrier = link->carrier;
 }
 
 void net_m_arb_snapshot_one(const NET_M_ARB* arb, const NET_M_LINK_RT* links,
@@ -300,6 +303,10 @@ static void arb_link_cycle(NET_M_ARB* arb, NET_M_LINK_RT* links, const NET_M_OPS
     /* 未启用链路不刷新，只在状态刚落到 DISABLED 时补发一次事件 */
     if (0 == link->enable || NULL == ops[i])
     {
+        /* 禁用期不参与刷新：载波随链路关闭归零，重新启用后首轮只记录基线不报事件 */
+        link->carrier = 0;
+        link->carrierSeen = 0;
+
         if (link->prev != link->state)
         {
             link->prev = link->state;
@@ -346,7 +353,20 @@ static void arb_link_cycle(NET_M_ARB* arb, NET_M_LINK_RT* links, const NET_M_OPS
 
     net_m_arb_snapshot_one(arb, links, i, &after);
 
-    /* 阶段 2-b：状态翻转事件；未翻转则比对字段差异 */
+    /* 阶段 2-b：载波变化（网线插拔 / 接口 UP-DOWN）单独上报，
+       与取址进度、IP/掩码/网关变化解耦；启用后首轮只记录基线，避免开机即报 CARRIER_UP */
+    if (0 == link->carrierSeen)
+    {
+        link->carrierSeen = 1;
+    }
+    else if (before.carrier != after.carrier)
+    {
+        arb_ev_link(&item, (0 != after.carrier) ? NET_M_EV_CARRIER_UP : NET_M_EV_CARRIER_DOWN,
+                    &after);
+        net_m_arb_ev_push(evs, max, num, &item);
+    }
+
+    /* 阶段 2-c：状态翻转事件；未翻转则比对字段差异 */
     if (link->prev != link->state)
     {
         arb_ev_link(&item, arb_flip_type(link->prev, link->state), &after);

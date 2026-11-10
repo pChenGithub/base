@@ -74,7 +74,11 @@ typedef enum {
 
     /* 故障可观测性（本模块相对 netmgr 新增） */
     NET_M_EV_FAULT,     /**< 内部故障：载荷给出阶段与错误码，链路可能已降级 */
-    NET_M_EV_DEGRADED   /**< 链路仍就绪但子能力异常（DNS 写盘失败等） */
+    NET_M_EV_DEGRADED,  /**< 链路仍就绪但子能力异常（DNS 写盘失败等） */
+
+    /* 物理层连通性：与取址/地址信息变化解耦，单独上报（追加在末尾以保持既有取值不变） */
+    NET_M_EV_CARRIER_UP,   /**< 载波接通：插入网线 / 接口管理态 UP 且 carrier 在位 */
+    NET_M_EV_CARRIER_DOWN  /**< 载波断开：拔出网线 / 接口管理态 DOWN / 载波丢失 */
 } NET_M_EV;
 
 /** 链路快照字段变化位（INFO_CHANGE 载荷使用） */
@@ -99,6 +103,8 @@ typedef struct {
     int fault;             /**< 内部故障码（0 表示无故障），由 NET_M_EV_FAULT 上报 */
     int faultStage;        /**< 故障阶段（NET_M_STAGE），fault 为 0 时无意义 */
     NET_M_WIFI_INFO wifi;  /**< WiFi 连接信息，仅 WiFi 链路有效，其余链路恒为空 */
+    int carrier;           /**< 物理连通：1=管理态 UP 且有载波（网线在位/已关联），0=断开；
+                               与 state 解耦：carrier=1 但未取到地址时 state 仍为 DOWN */
 } NET_M_LINK;
 
 /** 精简链路标识：事件中用于定位链路 */
@@ -156,6 +162,7 @@ typedef struct {
  * 单次事件数据：外层只有判别符，其余按 ev 取 u 的对应成员
  * @note 载荷映射（禁止跨类型读取 u）：
  *       UP / DOWN / ENABLED / DISABLED → u.link（完整链路快照）
+ *       CARRIER_UP / CARRIER_DOWN     → u.link（完整链路快照，carrier 字段为变化后值）
  *       DHCP_*                        → u.dhcp
  *       WIFI_CONNECTED / DISCONNECTED → u.wifi
  *       INFO_CHANGE                   → u.info
@@ -167,7 +174,7 @@ typedef struct {
 typedef struct {
     NET_M_EV ev; /**< 事件类型（判别符），唯一公共字段 */
     union {
-        NET_M_LINK        link;  /**< UP / DOWN / ENABLED / DISABLED：完整快照 */
+        NET_M_LINK        link;  /**< UP / DOWN / ENABLED / DISABLED / CARRIER_*：完整快照 */
         NET_M_EVP_DHCP    dhcp;  /**< DHCP_RUNNING / SUCC / FAIL / LOST */
         NET_M_EVP_WIFI    wifi;  /**< WIFI_CONNECTED / WIFI_DISCONNECTED */
         NET_M_EVP_INFO    info;  /**< INFO_CHANGE */

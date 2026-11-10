@@ -37,6 +37,8 @@ typedef struct {
     NET_M_STATE prev;            /**< 上一轮状态，用于判定翻转 */
     unsigned char prio;          /**< 当前优先级，等同路由 metric */
     int enable;                  /**< 1=该链路已启用 */
+    int carrier;                 /**< 1=物理连通（管理态 UP 且有载波），由 refresh 写入 */
+    int carrierSeen;             /**< 1=本次启用后已记录过首轮载波，用于抑制首轮事件 */
     int route_on;                /**< 1=本模块已为该链路下发默认路由 */
     int rmetric;                 /**< 已下发路由的 metric，-1 表示未下发 */
     char rgate[16];              /**< 已下发路由使用的网关 */
@@ -88,8 +90,9 @@ typedef struct {
 
     /**
      * @brief 刷新链路实时状态：只把内核与进程的实际状态投影进上下文
-     * @details 只写 ip / mask / gate / wifi / state / err，
-     *          不得拉起或停止取址进程、不得改配置
+     * @details 只写 ip / mask / gate / wifi / carrier / state / err，
+     *          不得拉起或停止取址进程、不得改配置；
+     *          carrier 表示物理连通（管理态 UP 且有载波），与 state（是否就绪）解耦
      * @param link 链路运行时上下文
      * @return 0 成功；负值为错误码
      */

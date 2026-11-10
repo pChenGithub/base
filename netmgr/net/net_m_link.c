@@ -26,8 +26,10 @@ static int link_probe(NET_M_LINK_RT* link)
     link->mask[0] = '\0';
     link->gate[0] = '\0';
 
-    /* 第 1 步：管理态与载波同时就绪才算物理连通 */
-    if (!netmgr_iface_ready(link->ifname))
+    /* 第 1 步：管理态与载波同时就位才算物理连通；单独投影到 carrier，
+       使「网线插拔」可与「取址/地址变化」分别上报 */
+    link->carrier = netmgr_iface_ready(link->ifname) ? 1 : 0;
+    if (0 == link->carrier)
     {
         link->state = NET_M_ST_DOWN;
         return 1;
@@ -121,7 +123,9 @@ static int link_check_exist(NET_M_LINK_RT* link)
 {
     if (!netmgr_iface_exist(link->ifname))
     {
+        /* 接口消失（USB 网卡拔出等）：载波随接口一起消失 */
         link->state = NET_M_ST_DOWN;
+        link->carrier = 0;
         link->err = -NETMGRERR_NOTFOUND;
         return 1;
     }
