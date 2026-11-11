@@ -6,7 +6,7 @@ alwaysApply: true
 
 # C 编码规范
 
-> 分片：`code_c.mdc`（条文）/ `code_c_file.mdc`（文件与目录组织）/ `code_c_state.mdc`（数组长度与全局状态）
+> 分片：`code_c.mdc`（条文）/ `code_c_file.mdc`（文件组织与全局状态）/ `code_c_example.mdc`（正反示例）
 
 ## 适用范围
 
@@ -97,7 +97,7 @@ memcpy(buf, src, 128);
 
 ## 数组长度
 
-- 数组长度条见 `code_c_state.mdc`
+- 数组长度条见 `code_c_file.mdc`
 
 ## 复杂数据传参
 
@@ -186,7 +186,7 @@ if (ret < 0)
 
 ## 全局状态
 
-- 全局状态条见 `code_c_state.mdc`
+- 全局状态条见 `code_c_file.mdc`
 
 ## 注释风格
 
@@ -224,47 +224,16 @@ if (ret < 0)
 - 禁止 `scanf`
 - 禁止 1 起始下标，数组 / 序列下标一律从 0 开始（P0-2-1）
 - 禁止手动修改 Makefile（P0-1）
+- 禁止在函数内定义 `static` 变量（函数内静态缓冲 / 状态须提为**文件级 `static`**，并置于使用它的函数之前；**唯一例外**：Meyer 单例的静态实例）
+- 禁止取值型宏的值仍写算式（须为最终字面量——数字 / 字符串 / 枚举，派生与换算写进注释；**例外**：数组元素个数 `sizeof(arr) / sizeof(arr[0])`、位掩码 `(1U << n)`、函数式宏）
 
 ## 正向示例
 
-```c
-/* 正确：判空 + 携带长度 + 错误码 + 开头声明 + 调用方用 sizeof */
-int fillBuffer(u8 *buf, int bufLen)
-{
-    int i;
-
-    if (buf == NULL || bufLen <= 0)
-    {
-        return -ERR_PARAM_INVALID;
-    }
-    for (i = 0; i < bufLen; i++)
-    {
-        buf[i] = 0;
-    }
-    return 0;
-}
-
-u8 buffer[256];
-fillBuffer(buffer, sizeof(buffer));
-```
+- 见 `code_c_example.mdc`「正向示例」（下标、错误日志、定义即初始化、失败路径前置、取值即判、只取所需、命名段数、宏取值、封装边界、逐条生效、资源释放、直接使用产出）
 
 ## 反向示例
 
-```c
-/* 错误：不判空 + 无长度参数 + 调用方写死数字 + 块中间声明 */
-u8 buffer[256];
-fillBuffer(buffer, 256);
-
-void fillBuffer(u8 *buf)
-{
-    int i;
-
-    for (i = 0; i < 100; i++)
-    {
-        buf[i] = 0;   /* 无长度校验，可能越界 */
-    }
-}
-```
+- 见 `code_c_example.mdc`「反向示例」
 
 ## 个性化扩展
 

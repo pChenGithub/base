@@ -1,0 +1,354 @@
+---
+description: C 编码规范示例分片：13 组正例与 15 组反例（下标、错误日志、初始化、判空、命名、宏、封装、逐条生效、资源释放），条文见 code_c.mdc
+alwaysApply: true
+---
+
+# C 编码规范 · 正反示例
+
+> 分片：`code_c.mdc`（条文）/ `code_c_file.mdc`（文件组织与全局状态）/ 本文件（正反示例）
+
+## 适用范围
+
+- 本项目自研 C 源码的示例样板；条文与判定口径见 `code_c.mdc`
+
+## 编程语言
+
+- C
+
+## 语言版本特性
+
+- 见 `code_c.mdc`「语言版本特性」
+
+## 注释风格
+
+- 见 `code_c.mdc`「注释风格」
+
+## 禁止项
+
+- 见 `code_c.mdc`「禁止项」
+
+## 正向示例
+
+```c
+/* 正确：判空 + 携带长度 + 错误码 + 变量集中在开头 + 调用方用 sizeof */
+int fillBuffer(u8 *buf, int bufLen)
+{
+    int i;
+
+    if (buf == NULL || bufLen <= 0)
+    {
+        return -ERR_PARAM_INVALID;
+    }
+    for (i = 0; i < bufLen; i++)
+    {
+        buf[i] = 0;
+    }
+    return 0;
+}
+
+u8 buffer[256];
+fillBuffer(buffer, sizeof(buffer));
+```
+
+```c
+/* 正确：下标从 0 起 + 用 < 判界；命名顺序与下标一致，注释不替代修正 */
+for (int i = 0; i < ITEMS_PER_PAGE; ++i)
+{
+    ...
+}
+
+/* 正确：错误分支必打日志（含错误码 / 原因） */
+int ret = doSomething();
+if (ret < 0)
+{
+    logError("操作失败, 错误码 %d", ret);
+    return ret;
+}
+
+/* 正确：定义即初始化（标量给初值，数组 / 结构体就地清零） */
+int ret = 0;
+char buf[64] = {0};
+ST_Param param = {0};
+
+/* 正确：失败路径逐条独立判断、立即返回，正常流程零嵌套 */
+if (NULL == buf)
+{
+    logError("参数无效");
+    return -ERR_PARAM;
+}
+if (len <= 0)
+{
+    logError("长度非法");
+    return -ERR_PARAM;
+}
+memcpy(buf, src, len);
+
+/* 正确：必需节点取到即判空并短路退出（先释放已持有资源）；可选字段在取值处注明兜底 */
+cJSON* data = cJSON_GetObjectItem(root, "data");
+if (NULL == data)
+{
+    logError("响应缺少 data 节点");
+    cJSON_Delete(root);
+    return -1;
+}
+char* addr = NULL;   /* 字段可缺，取不到按 "(无)" 打印 */
+getfield_strPoint(data, "reportAddr", &addr);
+
+/* 正确：只处理职责所需（本函数职责=取通道状态，只取 index 与 used） */
+int index = -1;   /* 通道号；-1 表示缺失或类型不符 */
+int used = -1;    /* 通道状态；-1 同上 */
+getfield_int(item, "index", &index);
+getfield_int(item, "used", &used);
+if (0 <= index && index < CHANNEL_MAX)
+{
+    gChannel[index].sta = used;
+    logInfo("通道 %d 状态 %d", index, used);
+}
+/* name / url / modfyTime 与取状态无关：不取、不判断、不打印 */
+
+/* 正确：下划线命名 ≤3 段（枚举常量同样适用） */
+#define MODULE_SENSORS_MS  5000
+int module_port_dev(int commPort);
+enum ModuleCmd
+{
+    MODULE_CMD_START = 0,   /* 3 段 */
+    MODULE_CMD_STOP  = 1    /* 3 段 */
+};
+
+/* 正确：驼峰命名 ≤3 段（按大写分界计词；g_ / s_ 前缀不计段） */
+void uiMainInit(void);      /* ui / Main / Init */
+void powerClickCb(void);    /* power / Click / Cb */
+
+/* 正确：取值型宏一步到位（字面量），算式只写进注释 */
+#define MODULE_TICK_MS    3000   /* 3s = 3 × 1000 */
+#define UI_CONTENT_Y      40     /* (800 − 720) / 2：内容区垂直居中偏移 */
+
+/* 正确：模块内部直接用一行取值，判空写在调用处，不为它单造取上下文函数 */
+void uiWarnRefresh(lv_obj_t *warn)
+{
+    uiWarnCtx *ctx = NULL;
+    if (NULL == warn)
+    {
+        return;
+    }
+    ctx = (uiWarnCtx *)lv_obj_get_user_data(warn);
+    if (NULL == ctx)
+    {
+        return;
+    }
+    warnScan(ctx);
+}
+```
+
+```c
+/* 正确：逐条独立生效——单条校验通过即写回，无效条目当条跳过（不做整批暂存） */
+for (int i = 0; i < count; ++i)
+{
+    int index = -1;
+    int used = -1;
+    getFieldInt(getArrayItem(list, i), "index", &index);
+    getFieldInt(getArrayItem(list, i), "used", &used);
+    if (index < 0 || index >= CHANNEL_MAX)
+    {
+        logError("通道号异常 %d，忽略该条", index);
+        continue;                      /* 当条跳过，不影响其它条目 */
+    }
+    gChannel[index].sta = used;        /* 有效即生效 */
+}
+```
+
+```c
+/* 正确：解析完成即释放原文本（结果已独立持有数据），不拖到函数末尾 */
+int ret = textToObj(text, &obj);
+if (0 != ret)
+{
+    free(text);
+    logError("解析失败 %d", ret);
+    return -1;
+}
+free(text);            /* 最后一次使用点：立即释放并置空 */
+text = NULL;
+applyObj(obj, out);    /* 后续只依赖 obj */
+objDelete(obj);
+```
+
+```c
+/* 正确：直接用接口产出的堆字符串，写完即释放（无中转缓冲） */
+char *text = buildText(obj);       /* 接口返回已分配字符串，调用方负责释放 */
+if (NULL == text)
+{
+    logError("生成失败");
+    return -1;
+}
+writeFile(file, text, strlen(text));
+free(text);
+text = NULL;
+```
+
+## 反向示例
+
+```c
+/* 错误：不判空 + 无长度参数 + 调用方写死数字 + 块中间声明 */
+u8 buffer[256];
+fillBuffer(buffer, 256);
+
+void fillBuffer(u8 *buf)
+{
+    int i;
+
+    for (i = 0; i < 100; i++)
+    {
+        buf[i] = 0;   /* 无长度校验，可能越界 */
+    }
+}
+```
+
+```c
+/* 错误：注释为违规开脱 + 下标从 1 开始（应改为 0 起并同步命名） */
+for (int i = 1; i <= ITEMS_PER_PAGE; ++i)   /* 代码违规，注释不能使其合理 */
+{
+    ...
+}
+
+/* 错误：错误分支静默返回，问题难以排查 */
+int ret = doSomething();
+if (ret < 0)
+{
+    return ret;   /* 无日志 */
+}
+
+/* 错误：先定义后赋值 / 定义后靠 memset 补初始化 */
+int ret;
+ret = 0;
+char buf[64];
+memset(buf, 0, sizeof(buf));
+
+/* 错误：失败判断嵌套——正常逻辑被裹进内层，失败路径不独立 */
+if (NULL != buf)
+{
+    if (len > 0)
+    {
+        memcpy(buf, src, len);
+        return 0;
+    }
+    return -ERR_PARAM;
+}
+return -ERR_PARAM;
+
+/* 错误：判空分散到使用点——三元里兜一次、使用处再判一次 */
+cJSON* data = cJSON_GetObjectItem(root, "data");
+cJSON* list = (NULL == data) ? NULL : cJSON_GetObjectItem(data, "medias");
+if (!cJSON_IsArray(list))
+{
+    return -1;
+}
+if (NULL != data)                             /* 取值处未短路退出 */
+    getfield_strPoint(data, "reportAddr", &addr);
+
+/* 错误：职责只是取状态，却把整条记录字段全取一遍再打印 */
+char* name = NULL;
+char* url = NULL;
+char* modfy = NULL;                           /* 这三个字段本函数不用 */
+getfield_strPoint(item, "name", &name);
+getfield_strPoint(item, "url", &url);
+getfield_strPoint(item, "modfyTime", &modfy);
+logInfo("index %d, name %s, used %d, url %s, modfyTime %s",
+        index, NULL == name ? "(无)" : name, used,
+        NULL == url ? "(无)" : url, NULL == modfy ? "(无)" : modfy);
+
+/* 错误：限定词层层堆叠，下划线超过 3 段 */
+#define MODULE_POLL_GET_SENSOR_INTERVAL_MS 5000
+int module_proto_get_sensor_status(int *version, unsigned char *sensors, int maxSensors);
+
+/* 错误：枚举常量超 3 段（多余限定词再挂一层） */
+enum ModuleCmd
+{
+    MODULE_CMD_START_FAST = 0,    /* 4 段，应压成 MODULE_CMD_START */
+    MODULE_CMD_STOP_SLOW  = 1     /* 4 段，应压成 MODULE_CMD_STOP */
+};
+
+/* 错误：驼峰命名超 3 段 */
+void uiPanelItemCreate(void);     /* 4 段，应压成 uiItemCreate */
+void uiPageItemApplyStyle(void);  /* 5 段，应压成 uiItemStyle 之类 */
+
+/* 错误：宏值还要再算一次，最终值不可见，单位易算错 */
+#define MODULE_TICK_MS   (3 * 1000)
+#define UI_CONTENT_Y     ((UI_SCREEN_H - UI_CONTENT_H) / 2)
+
+/* 错误：过度封装——只有判空 + 一行取值 + return 的纯转发，且仅一处调用 */
+static uiWarnCtx *warnGetCtx(lv_obj_t *warn)
+{
+    if (NULL == warn)
+    {
+        return NULL;
+    }
+    return (uiWarnCtx *)lv_obj_get_user_data(warn);
+}
+
+/* 错误：为对称好看而造的同义转发（无校验无转换，调用处写原 API 更直接） */
+static int32_t getObjWidth(lv_obj_t *obj)
+{
+    return lv_obj_get_width(obj);
+}
+```
+
+```c
+/* 错误：为"整批有效"的错觉先暂存全量、再统一写回——多一份空间 + 多一次遍历，且并未原子 */
+int sta[CHANNEL_MAX] = {0};
+char given[CHANNEL_MAX] = {0};         /* 还得再来一个数组区分本批是否给出 */
+for (int i = 0; i < count; ++i)
+{
+    ...
+    sta[index] = used;                 /* 先存着，不生效 */
+    given[index] = 1;
+}
+for (int i = 0; i < CHANNEL_MAX; ++i)  /* 解析完再遍历一次写回 */
+{
+    if (0 == given[i])
+        continue;
+    gChannel[i].sta = sta[i];
+}
+```
+
+```c
+/* 错误：原文本解析完不再使用，却拖到函数末尾才释放（期间白占资源） */
+int ret = textToObj(text, &obj);
+if (0 != ret)
+{
+    free(text);
+    logError("解析失败 %d", ret);
+    return -1;
+}
+applyObj(obj, out);    /* 与 text 无关的处理 */
+logInfo("已应用");
+objDelete(obj);
+free(text);            /* 最后一次使用在解析处，此处才释放 → 延迟释放 */
+```
+
+```c
+/* 错误：为同一份数据再分配缓冲整串拷贝（纯中转，无格式 / 生命周期需求） */
+char *text = buildText(obj);
+if (NULL == text)
+{
+    logError("生成失败");
+    return -1;
+}
+char *buf = malloc(strlen(text) + 1);   /* 多一次分配 */
+if (NULL == buf)
+{
+    free(text);
+    return -1;
+}
+strcpy(buf, text);                      /* 内容与来源完全相同 */
+writeFile(file, buf, strlen(buf));
+free(buf);
+free(text);
+```
+
+## 个性化扩展
+
+> 本单元为扩展挂载点：可根据项目/用户需要自由追加模块化小节，不破坏既有结构。
+> 追加时保持小节独立、命名清晰、编号递增（## 个性化扩展 1、## 个性化扩展 2 …）。
+
+### 个性化扩展 1
+<!-- 追加内容：项目专属约定 / 团队规范 / 工具链约定等 -->
