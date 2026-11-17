@@ -1,46 +1,22 @@
 # mongoose
 contains (DEFINES, M_MONGOOSE) {
-SOURCES += $$PWD/mongoose/mongoose.c \
-    $$PWD/mongoose/webserver.c
-HEADERS += $$PWD/mongoose/mongoose.h \
-    $$PWD/mongoose/webserver.h \
-    $$PWD/mongoose/web_config.h
-INCLUDEPATH += $$PWD/mongoose
+include ($$PWD/mongoose/mongoose.pri)
 }
 # cjson
 contains (DEFINES, M_CJSON) {
-SOURCES += $$PWD/json/cJSON.c \
-    $$PWD/json/cJSON_tools.c
-HEADERS += $$PWD/json/cJSON.h \
-    $$PWD/json/cJSON_tools.h \
-    $$PWD/json/json_errno.h
-INCLUDEPATH += $$PWD/json
+include ($$PWD/json/json.pri)
 }
 # mqtt
 contains (DEFINES, M_MQTT) {
-SOURCES += $$PWD/mqtt/mqttPahocClient.c \
-    #$$PWD/mqtt/taskMqttBase.cpp
-
-HEADERS += $$PWD/mqtt/mqttClient.h \
-    $$PWD/mqtt/mqttPahocClient.h \
-    #$$PWD/mqtt/taskMqttBase.h \
-    #$$PWD/mqtt/taskMqttMeta.h
-
-INCLUDEPATH += $$PWD/mqtt \
-    $$PWD/mqtt/include
-unix:!macx: LIBS += -L$$PWD/mqtt/lib -lpaho-mqtt3c
+include ($$PWD/mqtt/mqtt.pri)
 }
 # mixshell
 contains (DEFINES, M_MIXSHELL) {
-SOURCES += $$PWD/misc/mixShell.c
-HEADERS += $$PWD/misc/mixShell.h
-INCLUDEPATH *= $$PWD/misc
+include ($$PWD/misc/shell.pri)
 }
 # debug opt
 contains (DEFINES, M_DEBUG) {
-SOURCES += $$PWD/misc/debug_opt.c
-HEADERS += $$PWD/misc/debug_opt.h
-INCLUDEPATH *= $$PWD/misc
+include ($$PWD/misc/debug.pri)
 }
 # string opt
 contains (DEFINES, M_STRING) {
@@ -62,38 +38,28 @@ INCLUDEPATH += $$PWD/timeopt
 }
 # http client
 contains (DEFINES, M_HTTPC) {
-SOURCES += $$PWD/curl/ifaceHttpReq.c
-HEADERS += $$PWD/curl/ifaceHttpReq.h
-INCLUDEPATH += $$PWD/curl $$PWD/curl/include
-unix:!macx: LIBS += -L$$PWD/curl/lib -lcurl
-unix:!macx: LIBS += -L$$PWD/openssl/buid_aarch64/lib -lssl -lcrypto
+include ($$PWD/curl/httpc.pri)
 }
 # log
 contains (DEFINES, M_LOG) {
-SOURCES += $$PWD/zlog/lib_log.c
-SOURCES += $$PWD/zlog/lib_logTool.c
-HEADERS += $$PWD/zlog/lib_log.h
-HEADERS += $$PWD/zlog/lib_logTool.h
-INCLUDEPATH += $$PWD/zlog
-unix:!macx: LIBS += -L$$PWD/zlog/lib -lzlog
+include ($$PWD/zlog/log.pri)
 }
 # net opt
 contains (DEFINES, M_NET) {
-SOURCES += $$PWD/netopt/net_opt.c \
-    $$PWD/netopt/net_dhcp.c \
-    $$PWD/netopt/net_netlink.c
-HEADERS += $$PWD/netopt/net_opt.h \
-    $$PWD/netopt/net_dhcp.h \
-    $$PWD/netopt/net_netlink.h
-INCLUDEPATH += $$PWD/netopt
+include ($$PWD/netopt/net.pri)
 }
 # mmc
-# net opt
 contains (DEFINES, M_MMC) {
-SOURCES += $$PWD/misc/mmc_opt.c
-HEADERS += $$PWD/misc/mmc_opt.h
-INCLUDEPATH *= $$PWD/misc
+include ($$PWD/misc/mmc.pri)
 }
 # net mgr（网络管理服务，内部按 M_NETMGR 判断是否编入）
 include ($$PWD/netmgr/netmgr.pri)
+# modbus
+contains(DEFINES, M_MODBUS) {
+include ($$PWD/modbus/modbus.pri)
+}
+# zint
+contains(DEFINES, M_ZINT) {
+include ($$PWD/zint/zint.pri)
+}
 

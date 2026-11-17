@@ -19,10 +19,11 @@ equals(NETMGR_LEVEL, sys) {
 
 # ===== common 层：无横向依赖，任何层次都需编入（含进程控制，供 sys 层自管外部进程） =====
 SOURCES += $$PWD/common/net_mgr_util.c \
-    $$PWD/common/net_mgr_proc.c
+    $$PWD/common/net_mgr_proc.c \
     $$PWD/common/net_mgr_err.h \
     $$PWD/common/net_mgr_util.h \
     $$PWD/common/net_mgr_proc.h
+
 INCLUDEPATH += $$PWD/common
 
 # ===== sys 层：只依赖 common，可独立使用 =====

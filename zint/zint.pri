@@ -1,0 +1,47 @@
+SOURCES += $$PWD/library.c \
+        $$PWD/common.c \
+        $$PWD/eci.c \
+        $$PWD/gs1.c \
+        $$PWD/output.c \
+        $$PWD/vector.c \
+        $$PWD/aztec.c \
+        $$PWD/codablock.c \
+        $$PWD/pdf417.c \
+        $$PWD/code128.c \
+        $$PWD/reedsol.c \
+        $$PWD/ps.c \
+        $$PWD/emf.c \
+        $$PWD/svg.c \
+        $$PWD/bc412.c \
+        $$PWD/qr.c \
+        $$PWD/composite.c \
+        $$PWD/rss.c \
+        $$PWD/general_field.c \
+        $$PWD/large.c \
+        $$PWD/upcean.c \
+        $$PWD/ultra.c \
+        $$PWD/gridmtx.c \
+        $$PWD/code1.c \
+        $$PWD/code.c \
+        $$PWD/medical.c \
+        $$PWD/mailmark.c \
+        $$PWD/hanxin.c \
+        $$PWD/postal.c \
+        $$PWD/dmatrix.c \
+        $$PWD/raster.c \
+        $$PWD/2of5.c \
+        $$PWD/code16k.c \
+        $$PWD/code49.c \
+        $$PWD/telepen.c \
+        $$PWD/plessey.c \
+        $$PWD/maxicode.c \
+        $$PWD/auspost.c \
+        $$PWD/imail.c \
+        $$PWD/dotcode.c \
+        $$PWD/png.c \
+        $$PWD/gif.c \
+        $$PWD/tif.c \
+        $$PWD/bmp.c \
+        $$PWD/pcx.c
+HEADERS +=
+INCLUDEPATH += $$PWD

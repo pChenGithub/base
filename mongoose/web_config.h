@@ -41,6 +41,14 @@ typedef struct _api_path
 //#define WEB_ROOT_DIR    "./webapp"
 //#define WEB_URL_PORT    "8001"
 //#define WEB_LISTEN_ADDR "http://0.0.0.0:" WEB_URL_PORT
+
+// 跨域响应头：允许任意来源，并声明所需的请求方法与请求头
+// 说明：CORS 头在业务层（task_web.c 统一组包）输出，不再硬编码进 vendored 的 mongoose，
+//       避免升级 mongoose 被覆盖；行尾必须是 CRLF，否则严格 HTTP 解析器会报错
+#define WEB_CORS_HEADERS \
+    "Access-Control-Allow-Origin: *\r\n" \
+    "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n" \
+    "Access-Control-Allow-Headers: Content-Type\r\n"
 // http服务错误码
 #define WEB_CODE_OK     0   // 正确返回
 #define WEB_CODE_ERR    -1  // 错误返回，未知错误

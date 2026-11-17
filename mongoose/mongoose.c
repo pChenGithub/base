@@ -771,9 +771,10 @@ void mg_http_reply(struct mg_connection *c, int code, const char *headers,
   va_start(ap, fmt);
   len = mg_vasprintf(&buf, sizeof(mem), fmt, ap);
   va_end(ap);
-  // 我给加了一个头 Access-Control-Allow-Origin: *\n，跨域
-  // 再加一个头 Access-Control-Allow-Headers: *\n，跨域
-  mg_printf(c, "HTTP/1.1 %d %s\r\nAccess-Control-Allow-Origin: *\nAccess-Control-Allow-Headers: *\n%sContent-Length: %d\r\n\r\n", code,
+  // 注：原先此处硬编码了一行 "Access-Control-Allow-Origin: *\n"，行尾为裸 LF（违反 HTTP 规范，
+  //     会被 Node 等严格解析器判为格式错误），且升级 mongoose 会被覆盖；
+  //     现已移除，CORS 头改由业务层在 servers/webapp 中统一组包（见 web_config.h 的 WEB_CORS_HEADERS）
+  mg_printf(c, "HTTP/1.1 %d %s\r\n%sContent-Length: %d\r\n\r\n", code,
             mg_http_status_code_str(code), headers == NULL ? "" : headers, len);
   mg_send(c, buf, len > 0 ? (size_t) len : 0);
   if (buf != mem) free(buf);
